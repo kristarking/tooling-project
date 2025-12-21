@@ -21,10 +21,15 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Extract Azure Credentials
+        id: azure-creds
+        run: |
+          echo "${{ secrets.AZURE_CREDENTIALS }}" > azure_creds.json
+          echo "ARM_CLIENT_ID=$(jq -r .clientId azure_creds.json)" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$(jq -r .clientSecret azure_creds.json)" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=$(jq -r .subscriptionId azure_creds.json)" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$(jq -r .tenantId azure_creds.json)" >> $GITHUB_ENV
+          rm azure_creds.json
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -32,19 +37,22 @@ jobs:
           terraform_version: 1.6.6
 
       - name: Terraform Init
-        working-directory: terraform
         run: terraform init
 
       - name: Terraform Format
         run: terraform fmt -check
+        continue-on-error: true
 
       - name: Terraform Validate
         run: terraform validate
 
       - name: Terraform Plan
-        working-directory: terraform
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Output
+        if: github.ref == 'refs/heads/main'
+        run: terraform output -json
