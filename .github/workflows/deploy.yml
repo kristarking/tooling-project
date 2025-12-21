@@ -48,16 +48,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Lint Dockerfile
+      - name: Lint Dockerfile (Hadolint)
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
-          failure-threshold: warning
+          failure-threshold: error  # CHANGED THIS from warning to error
       
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
-          version: 'latest'
+          version: 'v3.12.0' # Pinned version for stability
       
       - name: Lint Helm Chart
         run: |
