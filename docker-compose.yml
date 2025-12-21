@@ -1,0 +1,92 @@
+version: "3.8"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: tooling-web
+
+    # Host 8080 → Container 80 (Apache default)
+    ports:
+      - "8080:80"
+
+    environment:
+      DB_HOST: db
+      DB_NAME: tooling
+      DB_USER: admin
+      DB_PASSWORD: admin
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    networks:
+      - tooling-network
+
+    restart: unless-stopped
+
+    # Docker-native healthcheck (used by Docker, CI, and K8s migration)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits (docker-compose compatible)
+    mem_limit: 512m
+    cpus: 0.5
+
+  db:
+    image: mysql:5.7
+    container_name: tooling-db
+
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-admin}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tooling}
+      MYSQL_USER: ${MYSQL_USER:-admin}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-admin}
+
+    volumes:
+      - db-data:/var/lib/mysql
+      - ./tooling-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+    # Exposed ONLY for local development/debugging
+    # Remove this in real production
+    ports:
+      - "3306:3306"
+
+    networks:
+      - tooling-network
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p$$MYSQL_ROOT_PASSWORD"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    mem_limit: 1g
+    cpus: 1.0
+
+networks:
+  tooling-network:
+    driver: bridge
+
+volumes:
+  db-data:
+    driver: local
