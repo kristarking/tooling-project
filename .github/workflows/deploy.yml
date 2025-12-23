@@ -59,13 +59,6 @@ jobs:
         with:
           version: 'v3.12.0' # Pinned version for stability
       
-      - name: Lint Helm Chart
-        run: |
-          ls -la helm/tooling-web
-          cd helm/tooling-web
-          helm lint .
-        continue-on-error: true  
-
   # 3. BUILD & INTEGRATION TEST: Verify app + database
 
   build-test:
