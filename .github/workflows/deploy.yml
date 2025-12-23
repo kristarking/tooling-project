@@ -61,6 +61,7 @@ jobs:
       
       - name: Lint Helm Chart
         run: |
+          ls -la helm/tooling-web
           cd helm/tooling-web
           helm lint .
 
