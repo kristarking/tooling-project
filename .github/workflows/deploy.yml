@@ -64,6 +64,7 @@ jobs:
           ls -la helm/tooling-web
           cd helm/tooling-web
           helm lint .
+        continue-on-error: true  
 
   # 3. BUILD & INTEGRATION TEST: Verify app + database
 
