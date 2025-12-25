@@ -1,7 +1,7 @@
 replicaCount: 3
 
 image:
-  repository: toolingacr.azurecr.io/tooling-web # Your ACR Login Server
+  repository: toolingacr.azurecr.io/tooling-web
   tag: latest
   pullPolicy: Always
 
@@ -13,12 +13,13 @@ database:
   host: "tooling-db-service"
   storageSize: 10Gi
 
-# Monitoring toggle for Prometheus to find your pods
+# Monitoring toggle for Prometheus
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "80"
+
 # Horizontal Pod Autoscaler
-  hpa:
+hpa:
   enabled: true
   minReplicas: 2
   maxReplicas: 5
