@@ -240,8 +240,9 @@ jobs:
         run: |
           TAG=${{ needs.build-push.outputs.image_tag }}
           
-          helm upgrade --install tooling-web ./helm/tooling-web \
+          helm upgrade --install tooling-web ./helm/tooling-web \  
             --namespace ${{ env.NAMESPACE }} \
+            -f ./helm/tooling-web/values.yaml
             --set image.repository=${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }} \
             --set image.tag=$TAG \
             --wait \
