@@ -10,6 +10,18 @@ spec:
   selector:
     app: tooling-web
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.database.host }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3306
+    targetPort: 3306
+  selector:
+    app: tooling-db
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -32,6 +44,18 @@ spec:
         - name: MYSQL_ROOT_PASSWORD
           valueFrom:
             secretKeyRef: { name: tooling-db-secret, key: root-password }
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef: { name: tooling-db-secret, key: database }
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef: { name: tooling-db-secret, key: username }
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef: { name: tooling-db-secret, key: password }
+        ports:
+        - containerPort: 3306
+          name: mysql
         volumeMounts:
         - name: mysql-storage
           mountPath: /var/lib/mysql
