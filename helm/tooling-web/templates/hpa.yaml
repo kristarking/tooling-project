@@ -1,4 +1,5 @@
-{{- if and .Values.hpa (index .Values.hpa "enabled") }}
+{{- if .Values.hpa }}
+{{- if .Values.hpa.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -9,6 +10,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ .Release.Name }}-web
+  # Using 'with' or direct access with default values to prevent nil pointers
   minReplicas: {{ .Values.hpa.minReplicas | default 1 }}
   maxReplicas: {{ .Values.hpa.maxReplicas | default 10 }}
   metrics:
@@ -18,4 +20,5 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage | default 60 }}
+{{- end }}
 {{- end }}
