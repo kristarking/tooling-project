@@ -190,7 +190,7 @@ jobs:
           echo "✅ Pushed: $REPO:$TAG"
           echo "✅ Pushed: $REPO:latest"
 
-  # 5. DEPLOY: Helm update to AKS
+  # 5. Deploy to AKS with Helm
 
   deploy:
     name: Deploy to AKS with Helm
@@ -199,17 +199,17 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      
+
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
           version: 'latest'
-      
+
       - name: Set AKS Context
         uses: azure/aks-set-context@v3
         with:
@@ -224,9 +224,9 @@ jobs:
 
       - name: Create Namespaces
         run: |
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+          for ns in ${{ env.NAMESPACE }} monitoring ingress-nginx; do
+            kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
+          done
 
       - name: Create/Update Secrets
         run: |
@@ -235,20 +235,30 @@ jobs:
             --from-literal=database='tooling' \
             --from-literal=username='admin' \
             --from-literal=password='${{ secrets.MYSQL_PASSWORD }}' \
-            --namespace=${{ env.NAMESPACE }} \
+            --namespace="${{ env.NAMESPACE }}" \
             --dry-run=client -o yaml | kubectl apply -f -
-          
           echo "✅ Secrets created/updated"
+
+      - name: Set Image Tag
+        id: set_tag
+        run: |
+          TAG="${{ needs.build-push.outputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            echo "❌ ERROR: image_tag is empty!"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "📦 Using image tag: $TAG"
 
       - name: Deploy Application with Helm
         run: |
-          TAG=${{ needs.build-push.outputs.image_tag }}
+          IMAGE_REPO="${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}"
           
           helm upgrade --install tooling-web ./helm/tooling-web \
             --namespace ${{ env.NAMESPACE }} \
             -f ./helm/tooling-web/values.yaml \
-            --set image.repository=${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }} \
-            --set image.tag=$TAG \
+            --set image.repository="${IMAGE_REPO}" \
+            --set image.tag="${TAG}" \
             --wait \
             --timeout 10m
           
@@ -257,15 +267,13 @@ jobs:
       - name: Verify Deployment
         run: |
           echo "📊 Checking deployment status..."
-          kubectl rollout status deployment/tooling-web-web -n ${{ env.NAMESPACE }} --timeout=5m
-          
+          kubectl rollout status deployment/tooling-web-web -n "${{ env.NAMESPACE }}" --timeout=5m
           echo ""
           echo "📦 Pods:"
-          kubectl get pods -n ${{ env.NAMESPACE }}
-          
+          kubectl get pods -n "${{ env.NAMESPACE }}"
           echo ""
           echo "🌐 Services:"
-          kubectl get svc -n ${{ env.NAMESPACE }}
+          kubectl get svc -n "${{ env.NAMESPACE }}"
 
       - name: Install Nginx Ingress Controller
         run: |
@@ -274,7 +282,6 @@ jobs:
             --set controller.service.type=LoadBalancer \
             --wait \
             --timeout 5m
-          
           echo "✅ Ingress controller installed"
 
       - name: Install Monitoring Stack
@@ -286,7 +293,6 @@ jobs:
             --set prometheus.prometheusSpec.retention=7d \
             --wait \
             --timeout 10m
-          
           echo "✅ Monitoring stack installed"
 
       - name: Display Access Information
@@ -294,6 +300,6 @@ jobs:
           echo "==============================================="
           echo "🎉 Deployment Complete!"
           echo "==============================================="
-          APP_IP=$(kubectl get svc -n ${{ env.NAMESPACE }} -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          APP_IP=$(kubectl get svc -n "${{ env.NAMESPACE }}" -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
           echo "Application: ${APP_IP}"
           echo "==============================================="
