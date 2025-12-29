@@ -266,6 +266,22 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "📦 Using image tag: $TAG"
 
+      - name: Check for Orphaned Resources
+        run: |
+          echo "🔍 Checking for existing resources..."
+          if helm list -n ${{ env.NAMESPACE }} | grep -q tooling-web; then
+            echo "✅ Helm release exists"
+          else
+            echo "⚠️  Helm release not found, checking for orphaned resources..."
+            ORPHANED=$(kubectl get all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web -o name 2>/dev/null || true)
+            if [ ! -z "$ORPHANED" ]; then
+              echo "🧹 Found orphaned resources, cleaning up..."
+              kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+              kubectl delete secret,configmap,pvc -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+              echo "✅ Cleanup complete"
+            fi
+          fi
+
       - name: Deploy Application with Helm
         run: |
           IMAGE_REPO="${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}"
@@ -276,7 +292,8 @@ jobs:
             --set image.repository="${IMAGE_REPO}" \
             --set image.tag="${TAG}" \
             --wait \
-            --timeout 10m
+            --timeout 10m \
+            --create-namespace
           
           echo "✅ Application deployed"
 
