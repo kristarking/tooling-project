@@ -1,3 +1,4 @@
+# Application configuration
 replicaCount: 3
 
 image:
@@ -9,9 +10,11 @@ service:
   type: LoadBalancer
   port: 80
 
+# Database configuration
 database:
   host: "tooling-db-service"
   storageSize: 10Gi
+  storageClass: "default"  # or "managed-premium" for Azure Premium SSD
 
 # Monitoring toggle for Prometheus
 podAnnotations:

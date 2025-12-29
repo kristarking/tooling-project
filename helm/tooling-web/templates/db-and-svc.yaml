@@ -1,69 +1,141 @@
+############################################
+# WEB APPLICATION SERVICE
+############################################
 apiVersion: v1
 kind: Service
 metadata:
   name: tooling-web-service
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tooling-web
+    app.kubernetes.io/component: web
 spec:
   type: {{ .Values.service.type }}
   ports:
-  - port: {{ .Values.service.port }}
-    targetPort: 80
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: 80
   selector:
-    app: tooling-web
+    app.kubernetes.io/name: tooling-web
+    app.kubernetes.io/component: web
+
 ---
+############################################
+# MYSQL HEADLESS SERVICE (REQUIRED)
+############################################
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Values.database.host }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tooling-db
+    app.kubernetes.io/component: database
 spec:
-  type: ClusterIP
+  clusterIP: None
   ports:
-  - port: 3306
-    targetPort: 3306
+    - name: mysql
+      port: 3306
+      targetPort: 3306
   selector:
-    app: tooling-db
+    app.kubernetes.io/name: tooling-db
+    app.kubernetes.io/component: database
+
 ---
+############################################
+# MYSQL STATEFULSET
+############################################
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: tooling-db
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tooling-db
+    app.kubernetes.io/component: database
 spec:
   serviceName: {{ .Values.database.host }}
   replicas: 1
   selector:
     matchLabels:
-      app: tooling-db
+      app.kubernetes.io/name: tooling-db
+      app.kubernetes.io/component: database
   template:
     metadata:
       labels:
-        app: tooling-db
+        app.kubernetes.io/name: tooling-db
+        app.kubernetes.io/component: database
     spec:
       containers:
-      - name: mysql
-        image: mysql:5.7
-        env:
-        - name: MYSQL_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef: { name: tooling-db-secret, key: root-password }
-        - name: MYSQL_DATABASE
-          valueFrom:
-            secretKeyRef: { name: tooling-db-secret, key: database }
-        - name: MYSQL_USER
-          valueFrom:
-            secretKeyRef: { name: tooling-db-secret, key: username }
-        - name: MYSQL_PASSWORD
-          valueFrom:
-            secretKeyRef: { name: tooling-db-secret, key: password }
-        ports:
-        - containerPort: 3306
-          name: mysql
-        volumeMounts:
-        - name: mysql-storage
-          mountPath: /var/lib/mysql
+        - name: mysql
+          image: mysql:5.7
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tooling-db-secret
+                  key: MYSQL_ROOT_PASSWORD
+
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: tooling-db-secret
+                  key: MYSQL_DATABASE
+
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: tooling-db-secret
+                  key: MYSQL_USER
+
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tooling-db-secret
+                  key: MYSQL_PASSWORD
+
+          ports:
+            - containerPort: 3306
+              name: mysql
+
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+
   volumeClaimTemplates:
-  - metadata:
-      name: mysql-storage
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: {{ .Values.database.storageSize }}
+    - metadata:
+        name: mysql-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.database.storageSize }}

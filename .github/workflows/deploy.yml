@@ -232,25 +232,29 @@ jobs:
           resource-group: ${{ needs.terraform-outputs.outputs.resource_group }}
           cluster-name: ${{ needs.terraform-outputs.outputs.aks_cluster_name }}
 
-      - name: Configure ACR Integration
+      - name: Configure ACR Integration (Managed Identity)
         run: |
-          echo "🔐 Configuring AKS to ACR authentication..."
+          echo "🔐 Configuring AKS to ACR authentication via Managed Identity..."
           
-          # Attach ACR to AKS cluster
+          # Attach ACR to AKS cluster using managed identity
           az aks update \
             --resource-group ${{ needs.terraform-outputs.outputs.resource_group }} \
             --name ${{ needs.terraform-outputs.outputs.aks_cluster_name }} \
             --attach-acr ${{ needs.terraform-outputs.outputs.acr_name }}
           
-          echo "✅ ACR integration configured"
+          echo "✅ ACR integration configured with managed identity"
           
           # Verify the integration
           echo ""
           echo "Verifying ACR role assignment..."
           ACR_ID=$(az acr show --name ${{ needs.terraform-outputs.outputs.acr_name }} --query id -o tsv)
-          az role assignment list --scope $ACR_ID --query "[?roleDefinitionName=='AcrPull'].principalId" -o tsv
+          ROLE_ASSIGNMENTS=$(az role assignment list --scope $ACR_ID --query "[?roleDefinitionName=='AcrPull'].principalId" -o tsv)
           
-          echo "✅ ACR authentication verified"
+          if [ -z "$ROLE_ASSIGNMENTS" ]; then
+            echo "⚠️  Warning: No AcrPull role assignments found. This may take a few moments to propagate."
+          else
+            echo "✅ ACR authentication verified - Role assignments exist"
+          fi
 
       - name: Add Helm Repositories
         run: |
@@ -264,7 +268,7 @@ jobs:
             kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
           done
 
-      - name: Create/Update Secrets
+      - name: Create/Update Database Secrets
         run: |
           # Database secrets
           kubectl create secret generic tooling-db-secret \
@@ -276,29 +280,6 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
           
           echo "✅ Database secrets created/updated"
-          
-          # Create ACR image pull secret as backup
-          echo ""
-          echo "🔐 Creating ACR image pull secret..."
-          
-          ACR_USERNAME=$(az acr credential show --name ${{ needs.terraform-outputs.outputs.acr_name }} --query username -o tsv)
-          ACR_PASSWORD=$(az acr credential show --name ${{ needs.terraform-outputs.outputs.acr_name }} --query passwords[0].value -o tsv)
-          
-          kubectl create secret docker-registry acr-secret \
-            --docker-server=${{ needs.terraform-outputs.outputs.acr_login_server }} \
-            --docker-username=$ACR_USERNAME \
-            --docker-password=$ACR_PASSWORD \
-            --namespace="${{ env.NAMESPACE }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          
-          echo "✅ ACR pull secret created/updated"
-          
-          # Patch default service account to use the secret
-          kubectl patch serviceaccount default \
-            -n "${{ env.NAMESPACE }}" \
-            -p '{"imagePullSecrets": [{"name": "acr-secret"}]}'
-          
-          echo "✅ Service account patched with imagePullSecrets"
 
       - name: Set Image Tag
         id: set_tag
@@ -334,12 +315,12 @@ jobs:
           echo "🚀 Deploying application..."
           echo "Image: ${IMAGE_REPO}:${TAG}"
           
+          # Deploy with managed identity (no imagePullSecrets needed)
           helm upgrade --install tooling-web ./helm/tooling-web \
             --namespace ${{ env.NAMESPACE }} \
             -f ./helm/tooling-web/values.yaml \
             --set image.repository="${IMAGE_REPO}" \
             --set image.tag="${TAG}" \
-            --set imagePullSecrets[0].name=acr-secret \
             --timeout 15m \
             --create-namespace \
             --atomic \
@@ -356,23 +337,36 @@ jobs:
           kubectl get pods -n "${{ env.NAMESPACE }}" -o wide
           echo ""
           echo "📋 Pod Events:"
-          kubectl get events -n "${{ env.NAMESPACE }}" --sort-by='.lastTimestamp' | tail -30
+          kubectl get events -n "${{ env.NAMESPACE }}" --sort-by='.lastTimestamp' | tail -50
           echo ""
           echo "🔍 Pod Descriptions:"
-          kubectl describe pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web
+          kubectl describe pods -n "${{ env.NAMESPACE }}"
           echo ""
-          echo "📜 Container Logs:"
+          echo "📜 Database Pod Logs (if exists):"
+          DB_POD=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=mysql -o name | head -1)
+          if [ ! -z "$DB_POD" ]; then
+            echo "--- Logs from $DB_POD ---"
+            kubectl logs -n "${{ env.NAMESPACE }}" $DB_POD --all-containers=true --tail=200 || true
+          fi
+          echo ""
+          echo "📜 Web Application Logs:"
           for pod in $(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web -o name); do
             echo "--- Logs from $pod ---"
             kubectl logs -n "${{ env.NAMESPACE }}" $pod --all-containers=true --tail=100 || true
             echo ""
           done
           echo ""
-          echo "🔐 Checking ImagePullSecrets:"
+          echo "🔐 Checking ServiceAccount configuration:"
           kubectl get serviceaccount default -n "${{ env.NAMESPACE }}" -o yaml
           echo ""
-          echo "🖼️  Checking Image Pull Status:"
+          echo "🖼️  Checking Container Status:"
           kubectl get pods -n "${{ env.NAMESPACE }}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[*].state}{"\n"}{end}'
+          echo ""
+          echo "💾 Checking PersistentVolumeClaims:"
+          kubectl get pvc -n "${{ env.NAMESPACE }}"
+          echo ""
+          echo "📊 Checking StatefulSets:"
+          kubectl get statefulsets -n "${{ env.NAMESPACE }}" -o wide
 
       - name: Verify Deployment
         run: |
@@ -529,5 +523,6 @@ jobs:
           echo "1. If the application is not accessible, verify NSG rules allow port 80"
           echo "2. It may take 2-3 minutes for LoadBalancer IPs to become fully routable"
           echo "3. Check pod logs: kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=tooling-web"
-          echo "4. Verify from inside cluster: kubectl exec -n ${{ env.NAMESPACE }} <pod-name> -- curl http://localhost:80"
+          echo "4. Check database logs: kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=mysql"
+          echo "5. Verify from inside cluster: kubectl exec -n ${{ env.NAMESPACE }} <pod-name> -- curl http://localhost:80"
           echo "==============================================="
