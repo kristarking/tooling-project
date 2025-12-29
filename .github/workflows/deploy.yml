@@ -307,6 +307,105 @@ jobs:
           echo ""
           echo "🌐 Services:"
           kubectl get svc -n "${{ env.NAMESPACE }}"
+          echo ""
+          echo "🔍 Pod Details:"
+          kubectl describe pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web | grep -A 5 "Events:"
+          echo ""
+          echo "📋 Container Logs (last 20 lines):"
+          kubectl logs -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web --tail=20 --all-containers=true || true
+      
+      - name: Test Application Health
+        run: |
+          echo "🏥 Testing application health..."
+          
+          # Get pod name
+          POD_NAME=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web -o jsonpath='{.items[0].metadata.name}')
+          
+          # Test from inside the cluster
+          echo "Testing from inside cluster..."
+          kubectl exec -n "${{ env.NAMESPACE }}" $POD_NAME -- curl -s -o /dev/null -w "%{http_code}" http://localhost:80 || echo "❌ Internal health check failed"
+          
+          # Check if service endpoints are ready
+          echo ""
+          echo "🔌 Service Endpoints:"
+          kubectl get endpoints -n "${{ env.NAMESPACE }}" tooling-web-service
+          
+          # Wait for LoadBalancer IP
+          echo ""
+          echo "⏳ Waiting for LoadBalancer IP to be fully provisioned..."
+          sleep 30
+          
+          # Get external IP
+          EXTERNAL_IP=$(kubectl get svc tooling-web-service -n "${{ env.NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "❌ No external IP assigned to LoadBalancer"
+            exit 1
+          fi
+          
+          echo "🌐 External IP: $EXTERNAL_IP"
+          
+          # Test external connectivity (with retry)
+          echo "Testing external connectivity..."
+          for i in {1..5}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://$EXTERNAL_IP || echo "000")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "✅ Application is accessible (HTTP $HTTP_CODE)"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $HTTP_CODE - Retrying in 10s..."
+            sleep 10
+          done
+          
+          echo "⚠️  Application may not be externally accessible yet. Check NSG rules and firewall settings."
+      
+      - name: Configure Network Security (NSG)
+        run: |
+          echo "🔒 Checking Network Security Group rules..."
+          
+          # Get the MC resource group (where AKS resources are deployed)
+          MC_RG=$(az aks show --resource-group ${{ needs.terraform-outputs.outputs.resource_group }} \
+            --name ${{ needs.terraform-outputs.outputs.aks_cluster_name }} \
+            --query nodeResourceGroup -o tsv)
+          
+          echo "Node Resource Group: $MC_RG"
+          
+          # Find NSG associated with AKS
+          NSG_NAME=$(az network nsg list --resource-group $MC_RG --query "[0].name" -o tsv)
+          
+          if [ -z "$NSG_NAME" ]; then
+            echo "⚠️  No NSG found in resource group $MC_RG"
+          else
+            echo "NSG Name: $NSG_NAME"
+            
+            # Check if HTTP rule exists
+            RULE_EXISTS=$(az network nsg rule list --resource-group $MC_RG --nsg-name $NSG_NAME \
+              --query "[?destinationPortRange=='80'].name" -o tsv)
+            
+            if [ -z "$RULE_EXISTS" ]; then
+              echo "📝 Creating NSG rule to allow HTTP traffic..."
+              az network nsg rule create \
+                --resource-group $MC_RG \
+                --nsg-name $NSG_NAME \
+                --name AllowHTTP \
+                --priority 1001 \
+                --source-address-prefixes '*' \
+                --destination-port-ranges 80 \
+                --access Allow \
+                --protocol Tcp \
+                --description "Allow HTTP traffic to LoadBalancer"
+              
+              echo "✅ NSG rule created"
+            else
+              echo "✅ HTTP rule already exists: $RULE_EXISTS"
+            fi
+            
+            # Show current NSG rules
+            echo ""
+            echo "Current NSG Rules:"
+            az network nsg rule list --resource-group $MC_RG --nsg-name $NSG_NAME \
+              --query "[].{Name:name, Priority:priority, Port:destinationPortRange, Access:access}" -o table
+          fi
 
       - name: Install Nginx Ingress Controller
         run: |
@@ -333,6 +432,25 @@ jobs:
           echo "==============================================="
           echo "🎉 Deployment Complete!"
           echo "==============================================="
-          APP_IP=$(kubectl get svc -n "${{ env.NAMESPACE }}" -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
-          echo "Application: ${APP_IP}"
+          
+          # Application IP
+          APP_IP=$(kubectl get svc tooling-web-service -n "${{ env.NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "Application URL: http://${APP_IP}"
+          
+          # Grafana IP
+          GRAFANA_IP=$(kubectl get svc -n monitoring monitoring-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "Grafana URL: http://${GRAFANA_IP}"
+          echo "  Default credentials: admin / prom-operator"
+          
+          # Ingress IP
+          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "Ingress Controller IP: ${INGRESS_IP}"
+          
+          echo "==============================================="
+          echo ""
+          echo "⚠️  IMPORTANT NOTES:"
+          echo "1. If the application is not accessible, verify NSG rules allow port 80"
+          echo "2. It may take 2-3 minutes for LoadBalancer IPs to become fully routable"
+          echo "3. Check pod logs: kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=tooling-web"
+          echo "4. Verify from inside cluster: kubectl exec -n ${{ env.NAMESPACE }} <pod-name> -- curl http://localhost:80"
           echo "==============================================="
