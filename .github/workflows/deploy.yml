@@ -307,6 +307,20 @@ jobs:
               echo "✅ Cleanup complete"
             fi
           fi
+      - name: Force Clean Namespace (if deployment fails repeatedly)
+        run: |
+          echo "🧹 Force cleaning namespace..."
+          kubectl delete all --all -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          kubectl delete secret,configmap,pvc --all -n ${{ env.NAMESPACE }} --ignore-not-found=true
+          # Keep only the database secret we just created
+          kubectl create secret generic tooling-db-secret \
+            --from-literal=root-password='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
+            --from-literal=database='tooling' \
+            --from-literal=username='admin' \
+            --from-literal=password='${{ secrets.MYSQL_PASSWORD }}' \
+            --namespace="${{ env.NAMESPACE }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          sleep 5
 
       - name: Deploy Application with Helm
         run: |
