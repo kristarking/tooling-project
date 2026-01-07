@@ -292,35 +292,54 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "📦 Using image tag: $TAG"
 
-      - name: Check for Orphaned Resources
+      - name: Check for Orphaned Resources and Wait for Cleanup
         run: |
           echo "🔍 Checking for existing resources..."
-          if helm list -n ${{ env.NAMESPACE }} | grep -q tooling-web; then
-            echo "✅ Helm release exists"
+          
+          # Check if Helm release exists
+          if helm list -n ${{ env.NAMESPACE }} | grep -q "^tooling-web"; then
+            echo "✅ Helm release exists - will upgrade"
           else
             echo "⚠️  Helm release not found, checking for orphaned resources..."
-            ORPHANED=$(kubectl get all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web -o name 2>/dev/null || true)
-            if [ ! -z "$ORPHANED" ]; then
-              echo "🧹 Found orphaned resources, cleaning up..."
-              kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
-              kubectl delete secret,configmap,pvc -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
-              echo "✅ Cleanup complete"
+            
+            # Check specifically for the service that causes conflicts
+            if kubectl get service tooling-web-service -n ${{ env.NAMESPACE }} &>/dev/null; then
+              echo "🧹 Found orphaned service 'tooling-web-service', deleting..."
+              kubectl delete service tooling-web-service -n ${{ env.NAMESPACE }} --ignore-not-found=true
+              
+              # Wait for the LoadBalancer to be fully deleted
+              echo "⏳ Waiting for LoadBalancer deletion to complete..."
+              for i in {1..30}; do
+                if ! kubectl get service tooling-web-service -n ${{ env.NAMESPACE }} &>/dev/null; then
+                  echo "✅ Service fully deleted after ${i} seconds"
+                  break
+                fi
+                echo "  Still deleting... (${i}/30)"
+                sleep 2
+              done
+              
+              # Extra safety wait for Azure to clean up
+              echo "⏳ Waiting additional 10s for Azure LoadBalancer cleanup..."
+              sleep 10
             fi
+            
+            # Clean up any other orphaned resources
+            echo "🧹 Cleaning up any remaining orphaned resources..."
+            kubectl delete all -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
+            kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+            
+            # Clean up config/secrets (except the DB secret we just created)
+            kubectl delete configmap -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
+            kubectl delete pvc -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
+            
+            echo "✅ Cleanup complete"
           fi
-      - name: Force Clean Namespace (if deployment fails repeatedly)
-        run: |
-          echo "🧹 Force cleaning namespace..."
-          kubectl delete all --all -n ${{ env.NAMESPACE }} --ignore-not-found=true
-          kubectl delete secret,configmap,pvc --all -n ${{ env.NAMESPACE }} --ignore-not-found=true
-          # Keep only the database secret we just created
-          kubectl create secret generic tooling-db-secret \
-            --from-literal=root-password='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
-            --from-literal=database='tooling' \
-            --from-literal=username='admin' \
-            --from-literal=password='${{ secrets.MYSQL_PASSWORD }}' \
-            --namespace="${{ env.NAMESPACE }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          sleep 5
+          
+          # Final verification
+          echo ""
+          echo "📊 Current namespace state:"
+          kubectl get all -n ${{ env.NAMESPACE }} || echo "Namespace is clean"
+
 
       - name: Deploy Application with Helm
         run: |
