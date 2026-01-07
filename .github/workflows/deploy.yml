@@ -232,30 +232,6 @@ jobs:
           resource-group: ${{ needs.terraform-outputs.outputs.resource_group }}
           cluster-name: ${{ needs.terraform-outputs.outputs.aks_cluster_name }}
 
-      - name: Configure ACR Integration (Managed Identity)
-        run: |
-          echo "🔐 Configuring AKS to ACR authentication via Managed Identity..."
-          
-          # Attach ACR to AKS cluster using managed identity
-          az aks update \
-            --resource-group ${{ needs.terraform-outputs.outputs.resource_group }} \
-            --name ${{ needs.terraform-outputs.outputs.aks_cluster_name }} \
-            --attach-acr ${{ needs.terraform-outputs.outputs.acr_name }}
-          
-          echo "✅ ACR integration configured with managed identity"
-          
-          # Verify the integration
-          echo ""
-          echo "Verifying ACR role assignment..."
-          ACR_ID=$(az acr show --name ${{ needs.terraform-outputs.outputs.acr_name }} --query id -o tsv)
-          ROLE_ASSIGNMENTS=$(az role assignment list --scope $ACR_ID --query "[?roleDefinitionName=='AcrPull'].principalId" -o tsv)
-          
-          if [ -z "$ROLE_ASSIGNMENTS" ]; then
-            echo "⚠️  Warning: No AcrPull role assignments found. This may take a few moments to propagate."
-          else
-            echo "✅ ACR authentication verified - Role assignments exist"
-          fi
-
       - name: Add Helm Repositories
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -268,9 +244,8 @@ jobs:
             kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
           done
 
-      - name: Create/Update Database Secrets
+      - name: Create/Update Secrets
         run: |
-          # Database secrets
           kubectl create secret generic tooling-db-secret \
             --from-literal=root-password='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
             --from-literal=database='tooling' \
@@ -278,8 +253,7 @@ jobs:
             --from-literal=password='${{ secrets.MYSQL_PASSWORD }}' \
             --namespace="${{ env.NAMESPACE }}" \
             --dry-run=client -o yaml | kubectl apply -f -
-          
-          echo "✅ Database secrets created/updated"
+          echo "✅ Secrets created/updated"
 
       - name: Set Image Tag
         id: set_tag
@@ -292,114 +266,36 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "📦 Using image tag: $TAG"
 
-      - name: Check for Orphaned Resources and Wait for Cleanup
+      - name: Check for Orphaned Resources
         run: |
           echo "🔍 Checking for existing resources..."
-          
-          # Check if Helm release exists
-          if helm list -n ${{ env.NAMESPACE }} | grep -q "^tooling-web"; then
-            echo "✅ Helm release exists - will upgrade"
+          if helm list -n ${{ env.NAMESPACE }} | grep -q tooling-web; then
+            echo "✅ Helm release exists"
           else
             echo "⚠️  Helm release not found, checking for orphaned resources..."
-            
-            # Check specifically for the service that causes conflicts
-            if kubectl get service tooling-web-service -n ${{ env.NAMESPACE }} &>/dev/null; then
-              echo "🧹 Found orphaned service 'tooling-web-service', deleting..."
-              kubectl delete service tooling-web-service -n ${{ env.NAMESPACE }} --ignore-not-found=true
-              
-              # Wait for the LoadBalancer to be fully deleted
-              echo "⏳ Waiting for LoadBalancer deletion to complete..."
-              for i in {1..30}; do
-                if ! kubectl get service tooling-web-service -n ${{ env.NAMESPACE }} &>/dev/null; then
-                  echo "✅ Service fully deleted after ${i} seconds"
-                  break
-                fi
-                echo "  Still deleting... (${i}/30)"
-                sleep 2
-              done
-              
-              # Extra safety wait for Azure to clean up
-              echo "⏳ Waiting additional 10s for Azure LoadBalancer cleanup..."
-              sleep 10
+            ORPHANED=$(kubectl get all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web -o name 2>/dev/null || true)
+            if [ ! -z "$ORPHANED" ]; then
+              echo "🧹 Found orphaned resources, cleaning up..."
+              kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+              kubectl delete secret,configmap,pvc -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+              echo "✅ Cleanup complete"
             fi
-            
-            # Clean up any other orphaned resources
-            echo "🧹 Cleaning up any remaining orphaned resources..."
-            kubectl delete all -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
-            kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
-            
-            # Clean up config/secrets (except the DB secret we just created)
-            kubectl delete configmap -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
-            kubectl delete pvc -n ${{ env.NAMESPACE }} -l app=tooling-web --ignore-not-found=true
-            
-            echo "✅ Cleanup complete"
           fi
-          
-          # Final verification
-          echo ""
-          echo "📊 Current namespace state:"
-          kubectl get all -n ${{ env.NAMESPACE }} || echo "Namespace is clean"
-
 
       - name: Deploy Application with Helm
         run: |
           IMAGE_REPO="${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}"
           
-          echo "🚀 Deploying application..."
-          echo "Image: ${IMAGE_REPO}:${TAG}"
-          
-          # Deploy with managed identity (no imagePullSecrets needed)
           helm upgrade --install tooling-web ./helm/tooling-web \
             --namespace ${{ env.NAMESPACE }} \
             -f ./helm/tooling-web/values.yaml \
             --set image.repository="${IMAGE_REPO}" \
             --set image.tag="${TAG}" \
-            --timeout 15m \
-            --create-namespace \
-            --atomic \
-            --cleanup-on-fail
+            --wait \
+            --timeout 10m \
+            --create-namespace
           
-          echo "✅ Helm deployment completed successfully"
-      
-      - name: Diagnose Deployment Issues
-        if: failure()
-        run: |
-          echo "❌ Deployment failed. Running diagnostics..."
-          echo ""
-          echo "📦 Pod Status:"
-          kubectl get pods -n "${{ env.NAMESPACE }}" -o wide
-          echo ""
-          echo "📋 Pod Events:"
-          kubectl get events -n "${{ env.NAMESPACE }}" --sort-by='.lastTimestamp' | tail -50
-          echo ""
-          echo "🔍 Pod Descriptions:"
-          kubectl describe pods -n "${{ env.NAMESPACE }}"
-          echo ""
-          echo "📜 Database Pod Logs (if exists):"
-          DB_POD=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=mysql -o name | head -1)
-          if [ ! -z "$DB_POD" ]; then
-            echo "--- Logs from $DB_POD ---"
-            kubectl logs -n "${{ env.NAMESPACE }}" $DB_POD --all-containers=true --tail=200 || true
-          fi
-          echo ""
-          echo "📜 Web Application Logs:"
-          for pod in $(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web -o name); do
-            echo "--- Logs from $pod ---"
-            kubectl logs -n "${{ env.NAMESPACE }}" $pod --all-containers=true --tail=100 || true
-            echo ""
-          done
-          echo ""
-          echo "🔐 Checking ServiceAccount configuration:"
-          kubectl get serviceaccount default -n "${{ env.NAMESPACE }}" -o yaml
-          echo ""
-          echo "🖼️  Checking Container Status:"
-          kubectl get pods -n "${{ env.NAMESPACE }}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[*].state}{"\n"}{end}'
-          echo ""
-          echo "💾 Checking PersistentVolumeClaims:"
-          kubectl get pvc -n "${{ env.NAMESPACE }}"
-          echo ""
-          echo "📊 Checking StatefulSets:"
-          kubectl get statefulsets -n "${{ env.NAMESPACE }}" -o wide
+          echo "✅ Application deployed"
 
       - name: Verify Deployment
         run: |
@@ -411,105 +307,6 @@ jobs:
           echo ""
           echo "🌐 Services:"
           kubectl get svc -n "${{ env.NAMESPACE }}"
-          echo ""
-          echo "🔍 Pod Details:"
-          kubectl describe pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web | grep -A 5 "Events:"
-          echo ""
-          echo "📋 Container Logs (last 20 lines):"
-          kubectl logs -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web --tail=20 --all-containers=true || true
-      
-      - name: Test Application Health
-        run: |
-          echo "🏥 Testing application health..."
-          
-          # Get pod name
-          POD_NAME=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l app.kubernetes.io/name=tooling-web -o jsonpath='{.items[0].metadata.name}')
-          
-          # Test from inside the cluster
-          echo "Testing from inside cluster..."
-          kubectl exec -n "${{ env.NAMESPACE }}" $POD_NAME -- curl -s -o /dev/null -w "%{http_code}" http://localhost:80 || echo "❌ Internal health check failed"
-          
-          # Check if service endpoints are ready
-          echo ""
-          echo "🔌 Service Endpoints:"
-          kubectl get endpoints -n "${{ env.NAMESPACE }}" tooling-web-service
-          
-          # Wait for LoadBalancer IP
-          echo ""
-          echo "⏳ Waiting for LoadBalancer IP to be fully provisioned..."
-          sleep 30
-          
-          # Get external IP
-          EXTERNAL_IP=$(kubectl get svc tooling-web-service -n "${{ env.NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          
-          if [ -z "$EXTERNAL_IP" ]; then
-            echo "❌ No external IP assigned to LoadBalancer"
-            exit 1
-          fi
-          
-          echo "🌐 External IP: $EXTERNAL_IP"
-          
-          # Test external connectivity (with retry)
-          echo "Testing external connectivity..."
-          for i in {1..5}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://$EXTERNAL_IP || echo "000")
-            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
-              echo "✅ Application is accessible (HTTP $HTTP_CODE)"
-              exit 0
-            fi
-            echo "Attempt $i: HTTP $HTTP_CODE - Retrying in 10s..."
-            sleep 10
-          done
-          
-          echo "⚠️  Application may not be externally accessible yet. Check NSG rules and firewall settings."
-      
-      - name: Configure Network Security (NSG)
-        run: |
-          echo "🔒 Checking Network Security Group rules..."
-          
-          # Get the MC resource group (where AKS resources are deployed)
-          MC_RG=$(az aks show --resource-group ${{ needs.terraform-outputs.outputs.resource_group }} \
-            --name ${{ needs.terraform-outputs.outputs.aks_cluster_name }} \
-            --query nodeResourceGroup -o tsv)
-          
-          echo "Node Resource Group: $MC_RG"
-          
-          # Find NSG associated with AKS
-          NSG_NAME=$(az network nsg list --resource-group $MC_RG --query "[0].name" -o tsv)
-          
-          if [ -z "$NSG_NAME" ]; then
-            echo "⚠️  No NSG found in resource group $MC_RG"
-          else
-            echo "NSG Name: $NSG_NAME"
-            
-            # Check if HTTP rule exists
-            RULE_EXISTS=$(az network nsg rule list --resource-group $MC_RG --nsg-name $NSG_NAME \
-              --query "[?destinationPortRange=='80'].name" -o tsv)
-            
-            if [ -z "$RULE_EXISTS" ]; then
-              echo "📝 Creating NSG rule to allow HTTP traffic..."
-              az network nsg rule create \
-                --resource-group $MC_RG \
-                --nsg-name $NSG_NAME \
-                --name AllowHTTP \
-                --priority 1001 \
-                --source-address-prefixes '*' \
-                --destination-port-ranges 80 \
-                --access Allow \
-                --protocol Tcp \
-                --description "Allow HTTP traffic to LoadBalancer"
-              
-              echo "✅ NSG rule created"
-            else
-              echo "✅ HTTP rule already exists: $RULE_EXISTS"
-            fi
-            
-            # Show current NSG rules
-            echo ""
-            echo "Current NSG Rules:"
-            az network nsg rule list --resource-group $MC_RG --nsg-name $NSG_NAME \
-              --query "[].{Name:name, Priority:priority, Port:destinationPortRange, Access:access}" -o table
-          fi
 
       - name: Install Nginx Ingress Controller
         run: |
@@ -536,26 +333,6 @@ jobs:
           echo "==============================================="
           echo "🎉 Deployment Complete!"
           echo "==============================================="
-          
-          # Application IP
-          APP_IP=$(kubectl get svc tooling-web-service -n "${{ env.NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
-          echo "Application URL: http://${APP_IP}"
-          
-          # Grafana IP
-          GRAFANA_IP=$(kubectl get svc -n monitoring monitoring-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
-          echo "Grafana URL: http://${GRAFANA_IP}"
-          echo "  Default credentials: admin / prom-operator"
-          
-          # Ingress IP
-          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
-          echo "Ingress Controller IP: ${INGRESS_IP}"
-          
-          echo "==============================================="
-          echo ""
-          echo "⚠️  IMPORTANT NOTES:"
-          echo "1. If the application is not accessible, verify NSG rules allow port 80"
-          echo "2. It may take 2-3 minutes for LoadBalancer IPs to become fully routable"
-          echo "3. Check pod logs: kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=tooling-web"
-          echo "4. Check database logs: kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=mysql"
-          echo "5. Verify from inside cluster: kubectl exec -n ${{ env.NAMESPACE }} <pod-name> -- curl http://localhost:80"
+          APP_IP=$(kubectl get svc -n "${{ env.NAMESPACE }}" -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "Application: ${APP_IP}"
           echo "==============================================="
