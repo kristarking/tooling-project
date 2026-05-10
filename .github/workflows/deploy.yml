@@ -29,18 +29,12 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
-      - name: Setup Terraform with Azure Credentials
+      - name: Export ARM credentials for Terraform
         run: |
-          echo "${{ secrets.AZURE_CREDENTIALS }}" > azure_creds.json
-          export ARM_CLIENT_ID=$(jq -r .clientId azure_creds.json)
-          export ARM_CLIENT_SECRET=$(jq -r .clientSecret azure_creds.json)
-          export ARM_SUBSCRIPTION_ID=$(jq -r .subscriptionId azure_creds.json)
-          export ARM_TENANT_ID=$(jq -r .tenantId azure_creds.json)
-          echo "ARM_CLIENT_ID=$ARM_CLIENT_ID" >> $GITHUB_ENV
-          echo "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET" >> $GITHUB_ENV
-          echo "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID" >> $GITHUB_ENV
-          echo "ARM_TENANT_ID=$ARM_TENANT_ID" >> $GITHUB_ENV
-          rm azure_creds.json
+          echo "ARM_CLIENT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientId)" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientSecret)" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .subscriptionId)" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .tenantId)" >> $GITHUB_ENV
       
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -49,17 +43,20 @@ jobs:
       - name: Terraform Init & Output
         id: tf
         working-directory: terraform
-        env:
-          ARM_CLIENT_ID: ${{ env.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ env.ARM_CLIENT_SECRET }}
-          ARM_SUBSCRIPTION_ID: ${{ env.ARM_SUBSCRIPTION_ID }}
-          ARM_TENANT_ID: ${{ env.ARM_TENANT_ID }}
         run: |
           terraform init
           echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
           echo "acr_login_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
           echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)" >> $GITHUB_OUTPUT
           echo "resource_group=$(terraform output -raw aks_resource_group)" >> $GITHUB_OUTPUT
+          
+      - name: Verify Outputs
+        run: |
+          [ -z "${{ steps.tf.outputs.acr_name }}" ] && echo "❌ acr_name is empty!" && exit 1
+          echo "✅ ACR Name: ${{ steps.tf.outputs.acr_name }}"
+          echo "✅ ACR Server: ${{ steps.tf.outputs.acr_login_server }}"
+          echo "✅ AKS Cluster: ${{ steps.tf.outputs.aks_cluster_name }}"
+          echo "✅ Resource Group: ${{ steps.tf.outputs.resource_group }}"          
  
   # 2. BUILD & INTEGRATION TEST: Verify app + database
 
