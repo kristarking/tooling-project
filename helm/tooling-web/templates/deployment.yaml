@@ -3,18 +3,19 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-web
   labels:
-    app: tooling-web
     app.kubernetes.io/name: tooling-web
     app.kubernetes.io/component: web
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: tooling-web
+      app.kubernetes.io/name: tooling-web
+      app.kubernetes.io/component: web
   template:
     metadata:
       labels:
-        app: tooling-web
+        app.kubernetes.io/name: tooling-web      # ✅ matches service selector
+        app.kubernetes.io/component: web          # ✅ matches service selector
       annotations:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
