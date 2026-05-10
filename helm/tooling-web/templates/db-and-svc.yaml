@@ -136,6 +136,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
+        storageClassName: {{ .Values.database.storageClass }}  
         resources:
           requests:
             storage: {{ .Values.database.storageSize }}

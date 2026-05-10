@@ -49,6 +49,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
     auto_scaling_enabled = true
     min_count           = 2
     max_count           = 5
+    node_count          = 2 
   }
 
   identity {

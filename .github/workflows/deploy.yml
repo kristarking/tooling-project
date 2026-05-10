@@ -247,10 +247,10 @@ jobs:
       - name: Create/Update Secrets
         run: |
           kubectl create secret generic tooling-db-secret \
-            --from-literal=root-password='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
-            --from-literal=database='tooling' \
-            --from-literal=username='admin' \
-            --from-literal=password='${{ secrets.MYSQL_PASSWORD }}' \
+            --from-literal=MYSQL_ROOT_PASSWORD='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
+            --from-literal=MYSQL_DATABASE='tooling' \
+            --from-literal=MYSQL_USER='admin' \
+            --from-literal=MYSQL_PASSWORD='${{ secrets.MYSQL_PASSWORD }}' \
             --namespace="${{ env.NAMESPACE }}" \
             --dry-run=client -o yaml | kubectl apply -f -
           echo "✅ Secrets created/updated"

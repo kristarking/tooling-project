@@ -1,4 +1,5 @@
 # Application configuration
+namespace: tooling
 replicaCount: 3
 
 image:
@@ -14,7 +15,7 @@ service:
 database:
   host: "tooling-db-service"
   storageSize: 10Gi
-  storageClass: "default"  # or "managed-premium" for Azure Premium SSD
+  storageClass: "default"  
 
 # Monitoring toggle for Prometheus
 podAnnotations:

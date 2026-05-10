@@ -4,6 +4,8 @@ metadata:
   name: {{ .Release.Name }}-web
   labels:
     app: tooling-web
+    app.kubernetes.io/name: tooling-web
+    app.kubernetes.io/component: web
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -17,7 +19,7 @@ spec:
         {{- toYaml .Values.podAnnotations | nindent 8 }}
     spec:
       containers:
-      - name: tooling-web
+        - name: tooling-web
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
@@ -33,17 +35,17 @@ spec:
           valueFrom:
             secretKeyRef:
               name: tooling-db-secret
-              key: database
+              key: MYSQL_DATABASE
         - name: DB_USER
           valueFrom:
             secretKeyRef:
               name: tooling-db-secret
-              key: username
+              key: MYSQL_USER
         - name: DB_PASSWORD
           valueFrom:
             secretKeyRef:
               name: tooling-db-secret
-              key: password
+              key: MYSQL_PASSWORD
         # Health probes for the web application
         livenessProbe:
           httpGet:
