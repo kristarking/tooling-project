@@ -292,18 +292,33 @@ jobs:
             --timeout 10m \
             --create-namespace
           
-          echo "✅ Application deployed"
+          echo "Application deployed"
 
       - name: Verify Deployment
         run: |
-          echo "📊 Checking deployment status..."
+          echo "Checking deployment status..."
           kubectl rollout status deployment/tooling-web-web -n "${{ env.NAMESPACE }}" --timeout=5m
           echo ""
-          echo "📦 Pods:"
+          echo "Pods:"
           kubectl get pods -n "${{ env.NAMESPACE }}"
           echo ""
-          echo "🌐 Services:"
+          echo "Services:"
           kubectl get svc -n "${{ env.NAMESPACE }}"
+      
+      - name: Import Database Schema
+        run: |
+          echo "Waiting for DB to be ready..."
+          kubectl wait pod/tooling-db-0 \
+            -n ${{ env.NAMESPACE }} \
+            --for=condition=Ready \
+            --timeout=3m
+
+          echo "Importing schema..."
+          kubectl exec -i tooling-db-0 -n ${{ env.NAMESPACE }} -- \
+            mysql -u root -p'${{ secrets.MYSQL_ROOT_PASSWORD }}' tooling \
+            < ./tooling-db.sql
+
+          echo "Schema imported"    
 
       - name: Install Nginx Ingress Controller
         run: |

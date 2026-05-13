@@ -43,6 +43,32 @@ spec:
 
 ---
 ############################################
+# MYSQL ALIAS SERVICE
+# The PHP app has 'db' hardcoded as the host
+# in functions.php. This service creates a
+# DNS entry for 'db' inside the namespace so
+# the app can resolve it without a code change.
+############################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tooling-db
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  selector:
+    app.kubernetes.io/name: tooling-db
+    app.kubernetes.io/component: database
+
+---
+############################################
 # MYSQL STATEFULSET
 ############################################
 apiVersion: apps/v1
@@ -66,6 +92,20 @@ spec:
         app.kubernetes.io/name: tooling-db
         app.kubernetes.io/component: database
     spec:
+      ##############################################
+      # INIT CONTAINER — runs before MySQL starts
+      # Removes lost+found that Azure Disk (ext4)
+      # creates on every fresh volume, which causes
+      # MySQL 5.7 --initialize to abort.
+      ##############################################
+      initContainers:
+        - name: remove-lost-found
+          image: busybox
+          command: ["sh", "-c", "rm -rf /var/lib/mysql/lost+found"]
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+
       containers:
         - name: mysql
           image: mysql:5.7
@@ -136,7 +176,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: {{ .Values.database.storageClass }}  
+        storageClassName: {{ .Values.database.storageClass }}
         resources:
           requests:
             storage: {{ .Values.database.storageSize }}
