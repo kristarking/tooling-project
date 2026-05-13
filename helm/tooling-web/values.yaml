@@ -15,7 +15,7 @@ service:
 database:
   host: "tooling-db-service"
   storageSize: 10Gi
-  storageClass: "default"  
+  storageClass: "managed-csi"  
 
 # Monitoring toggle for Prometheus
 podAnnotations:
