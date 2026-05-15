@@ -8,14 +8,19 @@ image:
   pullPolicy: Always
 
 service:
-  type: LoadBalancer
+  type: ClusterIP   # Changed from LB Ingress controller is now the public entry point
   port: 80
+
+# Ingress + TLS configuration
+ingress:
+  enabled: true
+  host: heros.com.ng   # domain name i'm using
 
 # Database configuration
 database:
   host: "tooling-db-service"
   storageSize: 10Gi
-  storageClass: "managed-csi"  
+  storageClass: "managed-csi"
 
 # Monitoring toggle for Prometheus
 podAnnotations:

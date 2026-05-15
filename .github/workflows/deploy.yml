@@ -52,7 +52,7 @@ jobs:
           
       - name: Verify Outputs
         run: |
-          [ -z "${{ steps.tf.outputs.acr_name }}" ] && echo "❌ acr_name is empty!" && exit 1
+          [ -z "${{ steps.tf.outputs.acr_name }}" ] && echo "acr_name is empty!" && exit 1
           echo "✅ ACR Name: ${{ steps.tf.outputs.acr_name }}"
           echo "✅ ACR Server: ${{ steps.tf.outputs.acr_login_server }}"
           echo "✅ AKS Cluster: ${{ steps.tf.outputs.aks_cluster_name }}"
@@ -189,7 +189,7 @@ jobs:
         run: |
           TAG=$(echo ${{ github.sha }} | cut -c1-7)
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "📦 Image tag: ${TAG}"
+          echo "Image tag: ${TAG}"
       
       - name: Build & Push
         run: |
@@ -200,8 +200,8 @@ jobs:
           docker push $REPO:$TAG
           docker push $REPO:latest
           
-          echo "✅ Pushed: $REPO:$TAG"
-          echo "✅ Pushed: $REPO:latest"
+          echo "Pushed: $REPO:$TAG"
+          echo "Pushed: $REPO:latest"
 
   # 5. Deploy to AKS with Helm
 
@@ -250,32 +250,32 @@ jobs:
             --from-literal=MYSQL_PASSWORD='${{ secrets.MYSQL_PASSWORD }}' \
             --namespace="${{ env.NAMESPACE }}" \
             --dry-run=client -o yaml | kubectl apply -f -
-          echo "✅ Secrets created/updated"
+          echo "Secrets created/updated"
 
       - name: Set Image Tag
         id: set_tag
         run: |
           TAG="${{ needs.build-push.outputs.image_tag }}"
           if [ -z "$TAG" ]; then
-            echo "❌ ERROR: image_tag is empty!"
+            echo "ERROR: image_tag is empty!"
             exit 1
           fi
           echo "TAG=$TAG" >> $GITHUB_ENV
-          echo "📦 Using image tag: $TAG"
+          echo "Using image tag: $TAG"
 
       - name: Check for Orphaned Resources
         run: |
-          echo "🔍 Checking for existing resources..."
+          echo "Checking for existing resources..."
           if helm list -n ${{ env.NAMESPACE }} | grep -q tooling-web; then
-            echo "✅ Helm release exists"
+            echo "Helm release exists"
           else
-            echo "⚠️  Helm release not found, checking for orphaned resources..."
+            echo "Helm release not found, checking for orphaned resources..."
             ORPHANED=$(kubectl get all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web -o name 2>/dev/null || true)
             if [ ! -z "$ORPHANED" ]; then
-              echo "🧹 Found orphaned resources, cleaning up..."
+              echo "Found orphaned resources, cleaning up..."
               kubectl delete all -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
               kubectl delete secret,configmap,pvc -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
-              echo "✅ Cleanup complete"
+              echo "Cleanup complete"
             fi
           fi
 
@@ -327,7 +327,24 @@ jobs:
             --set controller.service.type=LoadBalancer \
             --wait \
             --timeout 5m
-          echo "✅ Ingress controller installed"
+          echo "Ingress controller installed"
+      
+      - name: Install cert-manager
+        run: |
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager \
+            --create-namespace \
+            --set installCRDs=true \
+            --wait \
+            --timeout 5m
+          echo "cert-manager installed"
+
+      - name: Apply Let's Encrypt ClusterIssuer
+        run: |
+          kubectl apply -f ./k8s/cert-manager-issuer.yaml
+          echo "ClusterIssuer applied"    
 
       - name: Install Monitoring Stack
         run: |
@@ -335,15 +352,16 @@ jobs:
             --namespace monitoring \
             --set grafana.enabled=true \
             --set grafana.service.type=LoadBalancer \
+            --set grafana.adminPassword='${{ secrets.GRAFANA_PASSWORD }}' \
             --set prometheus.prometheusSpec.retention=7d \
             --wait \
             --timeout 10m
-          echo "✅ Monitoring stack installed"
+          echo "Monitoring stack installed"
 
       - name: Display Access Information
         run: |
           echo "==============================================="
-          echo "🎉 Deployment Complete!"
+          echo "Deployment Complete!"
           echo "==============================================="
           APP_IP=$(kubectl get svc -n "${{ env.NAMESPACE }}" -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
           echo "Application: ${APP_IP}"

@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tooling-web-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tooling-web
+    app.kubernetes.io/component: web
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    # TLS: automatically provision & renew SSL cert via Let's Encrypt
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Force all HTTP traffic to redirect to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+        - www.{{ .Values.ingress.host }}
+      secretName: tooling-web-tls
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tooling-web-service
+                port:
+                  number: {{ .Values.service.port }}
+    - host: www.{{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tooling-web-service
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}
