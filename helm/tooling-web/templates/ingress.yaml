@@ -7,13 +7,11 @@ metadata:
   labels:
     app.kubernetes.io/name: tooling-web
     app.kubernetes.io/component: web
+    app.kubernetes.io/managed-by: Helm
   annotations:
-    kubernetes.io/ingress.class: "nginx"
-    # TLS: automatically provision & renew SSL cert via Let's Encrypt
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    # Force all HTTP traffic to redirect to HTTPS
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "{{ .Values.ingress.sslRedirect }}"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "{{ .Values.ingress.sslRedirect }}"
 spec:
   ingressClassName: nginx
   tls:

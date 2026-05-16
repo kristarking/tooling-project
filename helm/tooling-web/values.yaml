@@ -8,14 +8,15 @@ image:
   pullPolicy: Always
 
 service:
-  type: ClusterIP   # Changed from LB Ingress controller is now the public entry point
+  type: ClusterIP
   port: 80
 
 # Ingress + TLS configuration
 ingress:
   enabled: true
-  host: heros.com.ng   # domain name i'm using
-
+  host: heros.com.ng
+  sslRedirect: "false"
+  
 # Database configuration
 database:
   host: "tooling-db-service"

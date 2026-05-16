@@ -4,13 +4,11 @@ metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    # Let's Encrypt will send cert expiry notices here
-    email: ojedayochristopher@gmail.com   
+    email: ojedayochristopher@gmail.com
     server: https://acme-v02.api.letsencrypt.org/directory
     privateKeySecretRef:
-      # cert-manager stores the ACME account key here
       name: letsencrypt-prod-account-key
     solvers:
       - http01:
           ingress:
-            class: nginx
+            ingressClassName: nginx
