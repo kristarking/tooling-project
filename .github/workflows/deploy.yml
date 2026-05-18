@@ -11,16 +11,19 @@ env:
   NAMESPACE: tooling
 
 jobs:
-  # 1. Get Terraform outputs
+  # ============================================================
+  # JOB 1 — Read Terraform outputs (ACR name, AKS name, etc.)
+  # ============================================================
   terraform-outputs:
     name: Infrastructure Discovery
     runs-on: ubuntu-latest
     outputs:
-      acr_name: ${{ steps.tf.outputs.acr_name }}
-      acr_login_server: ${{ steps.tf.outputs.acr_login_server }}
-      aks_cluster_name: ${{ steps.tf.outputs.aks_cluster_name }}
-      resource_group: ${{ steps.tf.outputs.resource_group }}
+      acr_name:           ${{ steps.tf.outputs.acr_name }}
+      acr_login_server:   ${{ steps.tf.outputs.acr_login_server }}
+      aks_cluster_name:   ${{ steps.tf.outputs.aks_cluster_name }}
+      resource_group:     ${{ steps.tf.outputs.resource_group }}
       node_resource_group: ${{ steps.tf.outputs.node_resource_group }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +34,10 @@ jobs:
 
       - name: Export ARM credentials for Terraform
         run: |
-          echo "ARM_CLIENT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientId)" >> $GITHUB_ENV
-          echo "ARM_CLIENT_SECRET=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientSecret)" >> $GITHUB_ENV
+          echo "ARM_CLIENT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}'     | jq -r .clientId)"       >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .clientSecret)"   >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .subscriptionId)" >> $GITHUB_ENV
-          echo "ARM_TENANT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r .tenantId)" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}'     | jq -r .tenantId)"       >> $GITHUB_ENV
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -45,26 +48,29 @@ jobs:
         working-directory: terraform
         run: |
           terraform init
-          echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
-          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
-          echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)" >> $GITHUB_OUTPUT
-          echo "resource_group=$(terraform output -raw aks_resource_group)" >> $GITHUB_OUTPUT
+          echo "acr_name=$(terraform output -raw acr_name)"                       >> $GITHUB_OUTPUT
+          echo "acr_login_server=$(terraform output -raw acr_login_server)"       >> $GITHUB_OUTPUT
+          echo "aks_cluster_name=$(terraform output -raw aks_cluster_name)"       >> $GITHUB_OUTPUT
+          echo "resource_group=$(terraform output -raw aks_resource_group)"       >> $GITHUB_OUTPUT
           echo "node_resource_group=$(terraform output -raw aks_node_resource_group)" >> $GITHUB_OUTPUT
 
       - name: Verify Outputs
         run: |
-          [ -z "${{ steps.tf.outputs.acr_name }}" ] && echo "acr_name is empty!" && exit 1
-          echo "ACR Name: ${{ steps.tf.outputs.acr_name }}"
-          echo "ACR Server: ${{ steps.tf.outputs.acr_login_server }}"
-          echo "AKS Cluster: ${{ steps.tf.outputs.aks_cluster_name }}"
-          echo "Resource Group: ${{ steps.tf.outputs.resource_group }}"
+          [ -z "${{ steps.tf.outputs.acr_name }}" ] && echo "ERROR: acr_name is empty!" && exit 1
+          echo "ACR Name:           ${{ steps.tf.outputs.acr_name }}"
+          echo "ACR Server:         ${{ steps.tf.outputs.acr_login_server }}"
+          echo "AKS Cluster:        ${{ steps.tf.outputs.aks_cluster_name }}"
+          echo "Resource Group:     ${{ steps.tf.outputs.resource_group }}"
           echo "Node Resource Group: ${{ steps.tf.outputs.node_resource_group }}"
 
-  # 2. Build and integration test
+  # ============================================================
+  # JOB 2 — Build image locally and run integration tests
+  # ============================================================
   build-test:
     name: Integration Testing
     runs-on: ubuntu-latest
     needs: [terraform-outputs]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +95,7 @@ jobs:
             -e MYSQL_PASSWORD=test \
             mysql:5.7
 
-          echo "Waiting for MySQL..."
+          echo "Waiting for MySQL to be ready..."
           sleep 20
 
           docker run -d --name test-web \
@@ -101,7 +107,7 @@ jobs:
             -p 8080:80 \
             tooling-web:test
 
-          echo "Waiting for application..."
+          echo "Waiting for app to start..."
           sleep 15
 
       - name: Health Check
@@ -113,9 +119,11 @@ jobs:
         if: always()
         run: |
           docker stop test-web test-db || true
-          docker rm test-web test-db || true
+          docker rm  test-web test-db  || true
 
-  # 3. Vulnerability scanning
+  # ============================================================
+  # JOB 3 — Trivy vulnerability scan
+  # ============================================================
   security-scan:
     name: Security Scan (Trivy)
     runs-on: ubuntu-latest
@@ -123,6 +131,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -137,7 +146,7 @@ jobs:
           tags: tooling-web:scan
           cache-from: type=gha
 
-      - name: Run Trivy (SARIF for GitHub Security)
+      - name: Run Trivy (SARIF — uploads to GitHub Security tab)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: tooling-web:scan
@@ -146,13 +155,13 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
 
-      - name: Upload to GitHub Security
+      - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Run Trivy (Table format)
+      - name: Run Trivy (table summary in logs)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: tooling-web:scan
@@ -161,7 +170,10 @@ jobs:
           exit-code: '0'
         continue-on-error: true
 
-  # 4. Build and push image to ACR
+  # ============================================================
+  # JOB 4 — Build final image and push to ACR
+  # (only on pushes to main)
+  # ============================================================
   build-push:
     name: Push to ACR
     runs-on: ubuntu-latest
@@ -169,6 +181,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -183,14 +196,14 @@ jobs:
       - name: ACR Login
         run: az acr login --name ${{ needs.terraform-outputs.outputs.acr_name }}
 
-      - name: Generate Image Tag
+      - name: Generate Image Tag (7-char git SHA)
         id: tag
         run: |
           TAG=$(echo ${{ github.sha }} | cut -c1-7)
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Image tag: ${TAG}"
 
-      - name: Build & Push
+      - name: Build & Push to ACR
         run: |
           TAG=${{ steps.tag.outputs.tag }}
           REPO=${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}
@@ -200,13 +213,27 @@ jobs:
           echo "Pushed: $REPO:$TAG"
           echo "Pushed: $REPO:latest"
 
-  # 5. Deploy to AKS with Helm
-
+  # ============================================================
+  # JOB 5 — Deploy everything to AKS
+  #
+  # CORRECT ORDER (fixes the root cause from troubleshooting log):
+  #   1. Create namespaces
+  #   2. Install ingress-nginx          ← FIRST, so we get an external IP
+  #   3. Wait for external IP           ← Print IP so you can update DNS
+  #   4. Wait for DNS propagation       ← PAUSE here until DNS is confirmed
+  #   5. Install cert-manager           ← Only after DNS is live
+  #   6. Apply ClusterIssuer            ← Let's Encrypt can now reach your domain
+  #   7. Create DB secrets
+  #   8. Deploy app with Helm
+  #   9. Import DB schema
+  #  10. Install monitoring stack
+  # ============================================================
   deploy:
     name: Deploy to AKS
     runs-on: ubuntu-latest
     needs: [build-push, terraform-outputs]
     if: github.ref == 'refs/heads/main'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -224,113 +251,164 @@ jobs:
         uses: azure/aks-set-context@v3
         with:
           resource-group: ${{ needs.terraform-outputs.outputs.resource_group }}
-          cluster-name: ${{ needs.terraform-outputs.outputs.aks_cluster_name }}
+          cluster-name:   ${{ needs.terraform-outputs.outputs.aks_cluster_name }}
 
       - name: Add Helm Repositories
         run: |
-          helm repo add jetstack https://charts.jetstack.io
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo add jetstack         https://charts.jetstack.io
+          helm repo add ingress-nginx    https://kubernetes.github.io/ingress-nginx
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
 
+      # ----------------------------------------------------------
+      # STEP 1 — Namespaces
+      # ----------------------------------------------------------
       - name: Create Namespaces
         run: |
           for ns in ${{ env.NAMESPACE }} monitoring ingress-nginx cert-manager; do
             kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
           done
 
-      # Opens ports 80, 443, and NodePort range 30000-32767 on the AKS NSG.
-      # Required because AKS does not open these by default.
-      # Without 80/443: Let's Encrypt ACME challenge fails, no TLS cert.
-      # Without 30000-32767: LB health probes fail, all inbound traffic dropped.
-      - name: Open NSG Ports
+      # ----------------------------------------------------------
+      # STEP 2 — Install ingress-nginx FIRST
+      # AKS Standard LB (load_balancer_sku = "standard" in Terraform)
+      # handles NSG rules automatically — no manual NSG step needed.
+      # ----------------------------------------------------------
+      - name: Install Nginx Ingress Controller
         run: |
-          NODE_RG="${{ needs.terraform-outputs.outputs.node_resource_group }}"
-          NSG_NAME=$(az network nsg list \
-            --resource-group "$NODE_RG" \
-            --query "[0].name" -o tsv)
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --set controller.service.type=LoadBalancer \
+            --set controller.ingressClassResource.default=true \
+            --wait \
+            --timeout 10m
 
-          az network nsg rule create \
-            --resource-group "$NODE_RG" \
-            --nsg-name "$NSG_NAME" \
-            --name Allow-HTTP-HTTPS \
-            --priority 100 \
-            --direction Inbound \
-            --access Allow \
-            --protocol Tcp \
-            --source-address-prefixes Internet \
-            --destination-address-prefixes '*' \
-            --destination-port-ranges 80 443 \
-            --output none 2>/dev/null || \
-          az network nsg rule update \
-            --resource-group "$NODE_RG" \
-            --nsg-name "$NSG_NAME" \
-            --name Allow-HTTP-HTTPS \
-            --destination-port-ranges 80 443 \
-            --output none
+      # ----------------------------------------------------------
+      # STEP 3 — Wait until Azure assigns an external IP
+      # The IP is printed here — you will see it in the Actions log.
+      # Go to your domain registrar and update the A records NOW.
+      # ----------------------------------------------------------
+      - name: Wait For External IP
+        run: |
+          echo "Waiting for ingress-nginx to receive an external IP from Azure..."
 
-          az network nsg rule create \
-            --resource-group "$NODE_RG" \
-            --nsg-name "$NSG_NAME" \
-            --name Allow-NodePort-Range \
-            --priority 200 \
-            --direction Inbound \
-            --access Allow \
-            --protocol Tcp \
-            --source-address-prefixes Internet \
-            --destination-address-prefixes '*' \
-            --destination-port-ranges 30000-32767 \
-            --output none 2>/dev/null || \
-          az network nsg rule update \
-            --resource-group "$NODE_RG" \
-            --nsg-name "$NSG_NAME" \
-            --name Allow-NodePort-Range \
-            --destination-port-ranges 30000-32767 \
-            --output none
+          for i in $(seq 1 60); do
+            EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller \
+              -n ingress-nginx \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
 
-          echo "NSG ports opened"
+            if [ -n "$EXTERNAL_IP" ]; then
+              echo "External IP assigned: $EXTERNAL_IP"
+              break
+            fi
 
+            echo "  Still waiting... ($i/60)"
+            sleep 10
+          done
+
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "ERROR: External IP was not assigned after 10 minutes."
+            exit 1
+          fi
+
+          echo "EXTERNAL_IP=$EXTERNAL_IP" >> $GITHUB_ENV
+
+          echo ""
+          echo "================================================"
+          echo "ACTION REQUIRED — UPDATE YOUR DNS NOW"
+          echo ""
+          echo "  Go to your domain registrar and set:"
+          echo ""
+          echo "  heros.com.ng      →  A record →  $EXTERNAL_IP"
+          echo "  www.heros.com.ng  →  A record →  $EXTERNAL_IP"
+          echo ""
+          echo "  Verify at: https://dnschecker.org/#A/heros.com.ng"
+          echo "================================================"
+          echo ""
+          echo "The pipeline will now wait for DNS propagation."
+          echo "It checks every 30 seconds. Just update the records"
+          echo "and let the pipeline continue on its own."
+
+      # ----------------------------------------------------------
+      # STEP 4 — Wait for DNS propagation
+      # Pipeline pauses here. It will loop every 30 seconds until
+      # nslookup confirms heros.com.ng resolves to the ingress IP.
+      # GitHub Actions jobs can wait up to 6 hours — no rush.
+      # ----------------------------------------------------------
+      - name: Wait For DNS Propagation
+        run: |
+          echo "Checking DNS propagation for heros.com.ng and www.heros.com.ng → $EXTERNAL_IP"
+          echo "This step will keep looping until BOTH domains are confirmed."
+          echo ""
+
+          MAX_ATTEMPTS=120
+          ATTEMPTS=0
+
+          until \
+            nslookup heros.com.ng 8.8.8.8 2>/dev/null | grep -q "$EXTERNAL_IP" && \
+            nslookup www.heros.com.ng 8.8.8.8 2>/dev/null | grep -q "$EXTERNAL_IP"; do
+
+            ATTEMPTS=$((ATTEMPTS + 1))
+
+            if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
+              echo ""
+              echo "ERROR: DNS did not propagate after 60 minutes."
+              echo "Check your domain A records at your registrar."
+              echo "  heros.com.ng     should point to: $EXTERNAL_IP"
+              echo "  www.heros.com.ng should point to: $EXTERNAL_IP"
+              echo "  Verify at: https://dnschecker.org/#A/heros.com.ng"
+              exit 1
+            fi
+
+            echo "  DNS not propagated yet... ($ATTEMPTS/$MAX_ATTEMPTS — checking again in 30s)"
+            sleep 30
+          done
+
+          echo ""
+          echo "DNS propagation confirmed for BOTH heros.com.ng and www.heros.com.ng → $EXTERNAL_IP"
+          echo "Continuing with cert-manager installation..."
+
+      # ----------------------------------------------------------
+      # STEP 5 — Install cert-manager AFTER DNS is confirmed
+      # This is the correct order. cert-manager must not start
+      # before DNS is live or ACME challenges will fail immediately.
+      # ----------------------------------------------------------
       - name: Install cert-manager
         run: |
           helm upgrade --install cert-manager jetstack/cert-manager \
             --namespace cert-manager \
             --set installCRDs=true \
             --wait \
-            --timeout 5m
+            --timeout 10m
 
+      # ----------------------------------------------------------
+      # STEP 6 — Apply ClusterIssuer (Let's Encrypt production)
+      # ----------------------------------------------------------
       - name: Apply Let's Encrypt ClusterIssuer
         run: |
           kubectl apply -f ./k8s/cert-manager-issuer.yaml
-          kubectl wait clusterissuer/letsencrypt-prod \
-            --for=condition=Ready \
-            --timeout=60s
 
-      - name: Install Nginx Ingress Controller
-        run: |
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            --namespace ingress-nginx \
-            --set controller.service.type=LoadBalancer \
-            --wait \
-            --timeout 5m
+          echo "Waiting for ClusterIssuer to become Ready..."
 
-          echo "Waiting for external IP..."
-          for i in $(seq 1 24); do
-            EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller \
-              -n ingress-nginx \
-              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-            [ -n "$EXTERNAL_IP" ] && break
-            echo "  Waiting... ($i/24)"
+          for i in $(seq 1 30); do
+            READY=$(kubectl get clusterissuer letsencrypt-prod \
+              -o jsonpath='{.status.conditions[0].status}' 2>/dev/null)
+
+            if [ "$READY" = "True" ]; then
+              echo "ClusterIssuer is Ready"
+              break
+            fi
+
+            echo "  Still waiting... ($i/30)"
             sleep 10
           done
 
-          echo "================================================"
-          echo "Ingress External IP: ${EXTERNAL_IP}"
-          echo "Point DNS A records to this IP:"
-          echo "  heros.com.ng      →  ${EXTERNAL_IP}"
-          echo "  www.heros.com.ng  →  ${EXTERNAL_IP}"
-          echo "================================================"
+          kubectl describe clusterissuer letsencrypt-prod
 
-      - name: Create/Update Secrets
+      # ----------------------------------------------------------
+      # STEP 7 — Create database secrets
+      # ----------------------------------------------------------
+      - name: Create/Update DB Secrets
         run: |
           kubectl create secret generic tooling-db-secret \
             --from-literal=MYSQL_ROOT_PASSWORD='${{ secrets.MYSQL_ROOT_PASSWORD }}' \
@@ -340,32 +418,49 @@ jobs:
             --namespace="${{ env.NAMESPACE }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      # ----------------------------------------------------------
+      # STEP 8 — Resolve image tag from Job 4 output
+      # ----------------------------------------------------------
       - name: Set Image Tag
         run: |
           TAG="${{ needs.build-push.outputs.image_tag }}"
           if [ -z "$TAG" ]; then
-            echo "ERROR: image_tag is empty!"
+            echo "ERROR: image_tag is empty — build-push job may have failed."
             exit 1
           fi
           echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "Using image tag: $TAG"
 
+      # ----------------------------------------------------------
+      # Clean up any orphaned resources from a previous failed run
+      # ----------------------------------------------------------
       - name: Check for Orphaned Resources
         run: |
           if helm list -n ${{ env.NAMESPACE }} | grep -q tooling-web; then
-            echo "Helm release exists, upgrade will run"
+            echo "Existing Helm release found — upgrade will run."
           else
-            echo "No existing release, checking for orphaned resources..."
+            echo "No existing release. Checking for orphaned resources..."
             ORPHANED=$(kubectl get all -n ${{ env.NAMESPACE }} \
               -l app.kubernetes.io/instance=tooling-web -o name 2>/dev/null || true)
+
             if [ -n "$ORPHANED" ]; then
               echo "Cleaning up orphaned resources..."
               kubectl delete all -n ${{ env.NAMESPACE }} \
                 -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
               kubectl delete secret,configmap,pvc -n ${{ env.NAMESPACE }} \
                 -l app.kubernetes.io/instance=tooling-web --ignore-not-found=true
+            else
+              echo "No orphaned resources found."
             fi
           fi
-  
+
+      # ----------------------------------------------------------
+      # STEP 9 — Deploy application via Helm
+      # TLS is handled automatically by the ingress annotation:
+      #   cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      # Do NOT create a separate Certificate YAML — the ingress
+      # annotation triggers cert-manager automatically.
+      # ----------------------------------------------------------
       - name: Deploy Application with Helm
         run: |
           IMAGE_REPO="${{ needs.terraform-outputs.outputs.acr_login_server }}/${{ env.IMAGE_NAME }}"
@@ -376,29 +471,62 @@ jobs:
             --set image.repository="${IMAGE_REPO}" \
             --set image.tag="${TAG}" \
             --wait \
-            --timeout 10m \
+            --timeout 15m \
             --create-namespace
 
+      # ----------------------------------------------------------
+      # STEP 10 — Verify deployment is healthy
+      # ----------------------------------------------------------
       - name: Verify Deployment
         run: |
           kubectl rollout status deployment/tooling-web-web \
-            -n "${{ env.NAMESPACE }}" --timeout=5m
+            -n "${{ env.NAMESPACE }}" --timeout=10m
+
+          echo ""
+          echo "=== Pods ==="
           kubectl get pods -n "${{ env.NAMESPACE }}"
+
+          echo ""
+          echo "=== Services ==="
           kubectl get svc -n "${{ env.NAMESPACE }}"
+
+          echo ""
+          echo "=== Ingress ==="
           kubectl get ingress -n "${{ env.NAMESPACE }}"
+
+          echo ""
+          echo "=== Certificate (may still be pending — that is normal) ==="
           kubectl get certificate -n "${{ env.NAMESPACE }}" || true
 
+          echo ""
+          echo "=== Challenges (should appear then disappear once cert issues) ==="
+          kubectl get challenge -n "${{ env.NAMESPACE }}" || true
+
+          echo ""
+          echo "=== Describe Ingress ==="
+          kubectl describe ingress tooling-web-ingress -n "${{ env.NAMESPACE }}" || true
+
+          echo ""
+          echo "=== Cert Manager Logs ==="
+          kubectl logs -n cert-manager deploy/cert-manager --tail=50 || true
+
+      # ----------------------------------------------------------
+      # STEP 11 — Import database schema
+      # ----------------------------------------------------------
       - name: Import Database Schema
         run: |
           kubectl wait pod/tooling-db-0 \
             -n ${{ env.NAMESPACE }} \
             --for=condition=Ready \
-            --timeout=3m
+            --timeout=5m
 
           kubectl exec -i tooling-db-0 -n ${{ env.NAMESPACE }} -- \
             mysql -u root -p'${{ secrets.MYSQL_ROOT_PASSWORD }}' tooling \
             < ./tooling-db.sql
 
+      # ----------------------------------------------------------
+      # STEP 12 — Install Prometheus + Grafana monitoring stack
+      # ----------------------------------------------------------
       - name: Install Monitoring Stack
         run: |
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
@@ -408,14 +536,37 @@ jobs:
             --set grafana.adminPassword='${{ secrets.GRAFANA_PASSWORD }}' \
             --set prometheus.prometheusSpec.retention=7d \
             --wait \
-            --timeout 10m
+            --timeout 15m
 
+      # ----------------------------------------------------------
+      # Final summary
+      # ----------------------------------------------------------
       - name: Display Access Information
         run: |
           INGRESS_IP=$(kubectl get svc ingress-nginx-controller \
             -n ingress-nginx \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+
+          GRAFANA_IP=$(kubectl get svc monitoring-grafana \
+            -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+
+          echo ""
           echo "================================================"
           echo "Deployment Complete!"
-          echo "Ingress IP: ${INGRESS_IP}"
+          echo ""
+          echo "App URL:     https://heros.com.ng"
+          echo "App URL:     https://www.heros.com.ng"
+          echo "Ingress IP:  ${INGRESS_IP}"
+          echo ""
+          echo "Grafana:     http://${GRAFANA_IP}:3000"
           echo "================================================"
+          echo ""
+          echo "If certificate is still pending, watch with:"
+          echo "  kubectl get certificate -n ${{ env.NAMESPACE }} -w"
+          echo ""
+          echo "If challenges go invalid, reset with:"
+          echo "  kubectl delete order --all -n ${{ env.NAMESPACE }}"
+          echo "  kubectl delete challenge --all -n ${{ env.NAMESPACE }}"
+          echo "  kubectl delete certificate tooling-web-tls -n ${{ env.NAMESPACE }}"
+          echo "(cert-manager recreates automatically from the ingress annotation)"

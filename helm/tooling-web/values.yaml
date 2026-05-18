@@ -15,7 +15,7 @@ service:
 ingress:
   enabled: true
   host: heros.com.ng
-  sslRedirect: "false"
+  sslRedirect: "true"
   
 # Database configuration
 database:
