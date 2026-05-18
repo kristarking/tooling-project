@@ -382,6 +382,22 @@ jobs:
             --timeout 10m
 
       # ----------------------------------------------------------
+      # Wait for all cert-manager pods to be fully ready.
+      # helm --wait covers Running state but the webhook admission
+      # controller can still be initialising — this catches that.
+      # ----------------------------------------------------------
+      - name: Wait For cert-manager Pods
+        run: |
+          kubectl rollout status deployment/cert-manager \
+            -n cert-manager --timeout=5m
+
+          kubectl rollout status deployment/cert-manager-webhook \
+            -n cert-manager --timeout=5m
+
+          kubectl rollout status deployment/cert-manager-cainjector \
+            -n cert-manager --timeout=5m
+
+      # ----------------------------------------------------------
       # STEP 6 — Apply ClusterIssuer (Let's Encrypt production)
       # ----------------------------------------------------------
       - name: Apply Let's Encrypt ClusterIssuer
@@ -392,7 +408,7 @@ jobs:
 
           for i in $(seq 1 30); do
             READY=$(kubectl get clusterissuer letsencrypt-prod \
-              -o jsonpath='{.status.conditions[0].status}' 2>/dev/null)
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
 
             if [ "$READY" = "True" ]; then
               echo "ClusterIssuer is Ready"
@@ -402,6 +418,12 @@ jobs:
             echo "  Still waiting... ($i/30)"
             sleep 10
           done
+
+          if [ "$READY" != "True" ]; then
+            echo "ERROR: ClusterIssuer did not become Ready after 5 minutes."
+            kubectl describe clusterissuer letsencrypt-prod
+            exit 1
+          fi
 
           kubectl describe clusterissuer letsencrypt-prod
 
