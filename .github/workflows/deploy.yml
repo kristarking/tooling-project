@@ -396,7 +396,12 @@ jobs:
 
           kubectl rollout status deployment/cert-manager-cainjector \
             -n cert-manager --timeout=5m
-
+      - name: Create Cloudflare API Token Secret
+        run: |
+          kubectl create secret generic cloudflare-api-token \
+            --from-literal=api-token='${{ secrets.CLOUDFLARE_API_TOKEN }}' \
+            --namespace cert-manager \
+            --dry-run=client -o yaml | kubectl apply -f -  
       # ----------------------------------------------------------
       # STEP 6 — Apply ClusterIssuer (Let's Encrypt production)
       # ----------------------------------------------------------
