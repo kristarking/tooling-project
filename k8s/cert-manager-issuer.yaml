@@ -4,11 +4,13 @@ metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    email: ojedayochristopher@gmail.com
     server: https://acme-v02.api.letsencrypt.org/directory
+    email: ojedayochristopher@gmail.com
     privateKeySecretRef:
-      name: letsencrypt-prod-account-key
+      name: letsencrypt-prod
     solvers:
-      - http01:
-          ingress:
-            ingressClassName: nginx
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
