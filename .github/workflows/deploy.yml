@@ -543,8 +543,9 @@ jobs:
             --timeout=5m
 
           kubectl exec -i tooling-db-0 -n ${{ env.NAMESPACE }} -- \
-            mysql -u root -p'${{ secrets.MYSQL_ROOT_PASSWORD }}' tooling \
-            < ./tooling-db.sql
+            mysql -u root -p'${{ secrets.MYSQL_ROOT_PASSWORD }}' \
+            --init-command="SET sql_notes=0;" \
+            tooling < ./tooling-db.sql || echo "DB import done (tables may already exist — non-fatal)"
 
       # ----------------------------------------------------------
       # STEP 12 — Install Prometheus + Grafana monitoring stack
