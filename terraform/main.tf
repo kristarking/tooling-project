@@ -16,7 +16,7 @@ provider "azurerm" {
 # ---------------- RESOURCE GROUP ----------------
 resource "azurerm_resource_group" "rg" {
   name     = "tooling-rg"
-  location = "East US"
+  location = "West Europe"
 }
 
 # ---------------- LOG ANALYTICS ----------------
