@@ -8,9 +8,9 @@
 
 ## What This Project Is
 
-This is a production-grade deployment of a web application on Azure Kubernetes Service. The entire infrastructure is provisioned with Terraform, the application is containerized and stored in Azure Container Registry, and every deployment happens automatically through a GitHub Actions CI/CD pipeline. The app runs behind an NGINX Ingress Controller with TLS certificates issued by Let's Encrypt via cert-manager, and traffic reaches it through a Cloudflare Tunnel that bypasses direct IP exposure entirely.
+This is a production-grade deployment of a web application on Azure Kubernetes Service. The entire infrastructure is provisioned with Terraform, the application is containerized and stored in Azure Container Registry, and every deployment happens automatically through a GitHub Actions CI/CD pipeline. The app runs behind an NGINX Ingress Controller with TLS certificates issued by Let's Encrypt via cert-manager, and traffic reaches it through a Cloudflare Tunnel that removes the need for your Azure IP to be publicly reachable at all.
 
-The project went through real-world troubleshooting across multiple sessions — NSG rule bugs, ACME challenge failures, ISP-level IP blocking, and a full region migration from East US to West Europe. Every one of those issues is documented in this README so you understand not just how to deploy it, but what can go wrong and why.
+This was not a clean, one-shot deployment. It went through real troubleshooting across multiple sessions — NSG rule bugs, ACME challenge failures, ISP-level IP blocking, and a full region migration from East US to West Europe. Every one of those issues is documented here so you understand not just how to deploy it, but what can go wrong and why.
 
 > **📸 Screenshot:** *Final browser view — heros.com.ng loading with HTTPS padlock*
 
@@ -40,7 +40,7 @@ NGINX Ingress Controller (namespace: ingress-nginx)
      └──▶ Grafana (namespace: monitoring) — LoadBalancer IP
 ```
 
-**TLS flow:** cert-manager issues certificates from Let's Encrypt using DNS-01 challenge via Cloudflare API. The tunnel handles all inbound traffic so the Azure LoadBalancer IP never needs to be directly reachable.
+**TLS flow:** cert-manager issues certificates from Let's Encrypt using DNS-01 challenge via Cloudflare's API. The tunnel handles all inbound traffic so the Azure LoadBalancer IP never has to be directly reachable from the internet.
 
 ---
 
@@ -70,92 +70,85 @@ NGINX Ingress Controller (namespace: ingress-nginx)
 
 ## What You Need Before You Start
 
-Before you attempt this deployment, make sure the following are ready on your end:
+Before you try to deploy this, make sure the following are sorted on your end.
 
 **Accounts**
 
-You need an active Azure account with a valid subscription. This project creates resources that incur costs — AKS, ACR, Load Balancer, storage. Tear things down when you are done if you are not using them.
+You need an active Azure account with a valid subscription. This project creates resources that cost money — AKS, ACR, Load Balancer, storage. Tear things down when you are done if you are not actively using them.
 
-You need a GitHub account with this repo forked or cloned into your own account. The CI/CD pipeline runs on GitHub Actions and needs secrets added to your repo settings.
+You need a GitHub account with this repo forked or cloned into your own space. The CI/CD pipeline runs on GitHub Actions and requires secrets to be added to your repo settings before it will work.
 
-You need a Cloudflare account (free plan is enough). Your domain must be using Cloudflare's nameservers. This is required for both the DNS-01 TLS challenge and the Cloudflare Tunnel.
+You need a Cloudflare account. The free plan is enough for everything this project does. Your domain must be using Cloudflare's nameservers — this is non-negotiable because both the TLS certificate issuance (DNS-01) and the Cloudflare Tunnel depend on it.
 
-**Tools to install locally**
+**Local Tools**
 
-- Azure CLI (`az`) — for authenticating and running the service principal command
-- kubectl — for connecting to and inspecting your AKS cluster
-- Terraform — for understanding and optionally modifying the infrastructure code
-- Helm — if you want to manually upgrade or inspect the Helm chart
-- Git — for cloning the repo and triggering the pipeline
+You need the Azure CLI (`az`) installed for generating the service principal credentials. You need `kubectl` for connecting to and inspecting your cluster. Having `terraform` and `helm` installed locally is useful if you want to debug or modify things, but the pipeline handles the actual execution.
 
 **Domain**
 
-You need a domain name with nameservers pointed to Cloudflare. This project uses `heros.com.ng`. Anywhere you see that domain in this README, replace it with your own.
+You need a domain name that you own and can update the nameservers for. This project uses `heros.com.ng`. Everywhere you see that in this README, swap it out for yours.
 
 ---
 
 ## Cloudflare Setup — Step by Step
 
-Cloudflare does two jobs in this project. First, it handles DNS and TLS certificate issuance via its API (so cert-manager can complete Let's Encrypt DNS-01 challenges without port 80 ever being involved). Second, it runs a tunnel so traffic reaches your app inside AKS without your Azure IP ever being directly exposed to the internet.
+Cloudflare carries two responsibilities in this project. The first is handling DNS and TLS certificate issuance through its API, so cert-manager can complete Let's Encrypt DNS-01 challenges without port 80 ever being involved. The second is running a tunnel so traffic can reach your app inside AKS without your Azure IP ever being directly hit from the outside world.
 
-### Step 1 — Create a Cloudflare Account and Add Your Domain
+### Step 1 — Create a Cloudflare Account and Point Your Domain to It
 
-Go to [cloudflare.com](https://cloudflare.com) and sign up. Once logged in, click **Add a Site** and enter your domain name. Choose the Free plan. Cloudflare will scan your existing DNS records and then give you two nameserver addresses (they look like `crystal.ns.cloudflare.com` and `milan.ns.cloudflare.com`). Go to your domain registrar and replace your current nameservers with these two. It can take up to 24 hours to propagate but is usually faster.
+Go to [cloudflare.com](https://cloudflare.com) and create a free account. Once you are in, click **Add a Site** and enter your domain name. Pick the Free plan. Cloudflare will scan your existing DNS records and then give you two nameserver addresses that look something like `crystal.ns.cloudflare.com` and `milan.ns.cloudflare.com`.
 
-> **📸 Screenshot:** *Cloudflare dashboard showing nameservers*
+Log into wherever you registered your domain and replace the current nameservers with the two Cloudflare gave you. This is the only thing you will ever do on your domain registrar from this point forward. All DNS management moves to Cloudflare from here. It can take up to 24 hours for the nameserver change to fully propagate, though it is usually done in a couple of hours.
 
-### Step 2 — Add Your DNS Records
+> **📸 Screenshot:** *Cloudflare dashboard showing domain active with nameservers*
 
-Once your domain is active on Cloudflare, go to **DNS** and add these records:
+### Step 2 — Add Your DNS A Records in Cloudflare
 
-| Type | Name | Value | TTL | Proxy |
-|---|---|---|---|---|
-| A | @ | `<your-nginx-ingress-IP>` | Auto | Grey cloud (DNS only) during pipeline |
-| A | www | `<your-nginx-ingress-IP>` | Auto | Grey cloud during pipeline |
+Once Cloudflare confirms your domain is active, go to the **DNS** section. This is where you will add the A records pointing to your NGINX Ingress external IP.
 
-Keep the proxy **off (grey cloud)** while the pipeline is running and during certificate issuance. The pipeline's DNS wait step needs to resolve your actual Azure IP, not Cloudflare's proxy IPs. After the certificate is issued and the tunnel is deployed, you will flip these to orange cloud.
+You will not know the IP yet at this stage — it only exists after the pipeline runs and AKS provisions the LoadBalancer. So come back to this step once the pipeline prints the IP in its logs. When you have it, add two A records:
 
-> **📸 Screenshot:** *Cloudflare DNS records showing A records with grey cloud*
+One record with the name `@` pointing to your ingress IP. This covers the root domain (`heros.com.ng`).
+
+One record with the name `www` pointing to the same ingress IP. This covers `www.heros.com.ng`.
+
+Set both records to **grey cloud (DNS only)** while the pipeline is running. The pipeline has a DNS wait loop that checks whether your domain is resolving to the ingress IP, and that check fails if Cloudflare is proxying because it returns Cloudflare's own IPs instead of yours. After the certificate is issued and the tunnel is up, you will switch these to orange cloud.
+
+> **📸 Screenshot:** *Cloudflare DNS section showing A records with grey cloud*
 
 ### Step 3 — Create a Cloudflare API Token
 
-This token is what cert-manager uses to create and delete DNS TXT records during the Let's Encrypt DNS-01 challenge.
+cert-manager needs this token to create and delete DNS TXT records on your behalf during the Let's Encrypt DNS-01 challenge. Without it, the challenge cannot complete and your certificate will never issue.
 
-1. In the Cloudflare dashboard, click your profile icon (top right) and go to **My Profile**
-2. Click **API Tokens**, then **Create Token**
-3. Click **Use template** next to **Edit zone DNS**
-4. Under **Zone Resources**, select your specific domain from the dropdown
-5. Click **Continue to summary**, then **Create Token**
-6. Copy the token immediately — Cloudflare only shows it once
+In the Cloudflare dashboard, click your profile icon in the top right corner and go to **My Profile**. Click **API Tokens**, then **Create Token**. Click **Use template** next to **Edit zone DNS**. Under Zone Resources, select your specific domain from the dropdown so the token is scoped only to that zone. Click **Continue to summary**, then **Create Token**.
+
+Copy the token the moment it appears. Cloudflare only shows it once. If you lose it you will have to create a new one.
 
 This token goes into your GitHub Actions secrets as `CLOUDFLARE_API_TOKEN`.
 
-> **📸 Screenshot:** *Cloudflare API token creation screen*
+> **📸 Screenshot:** *Cloudflare API token creation with Edit zone DNS template selected*
 
 ### Step 4 — Create a Cloudflare Tunnel
 
-The tunnel is what makes traffic reach your app even when Nigerian ISPs or Cloudflare's own proxy servers cannot reach your Azure IP directly. The cloudflared pod inside your cluster makes an outbound connection to Cloudflare. Traffic flows from the user, to Cloudflare's edge, through that outbound tunnel connection, and into your cluster. Your Azure IP never needs to be directly reachable.
+This is what made the final deployment work. The Azure IP was unreachable from Nigerian ISPs regardless of what region the cluster was in. The tunnel fixes this by flipping the connection direction — instead of Cloudflare trying to reach your Azure IP, the cloudflared pod inside your cluster reaches out to Cloudflare. Traffic then flows: user → Cloudflare edge → through that outbound tunnel connection → into your cluster → to your app. Your Azure IP never has to accept any inbound connection from the outside.
 
-1. In the Cloudflare dashboard, go to **Zero Trust** (left sidebar)
-2. If it asks you to set up a team name, pick anything — this does not affect billing
-3. Go to **Networks** → **Tunnels**
-4. Click **Create a Tunnel**, choose **Cloudflared**, and name it something like `tooling-aks`
-5. On the next screen, choose **Docker** as the environment — this gives you a `docker run` command with your tunnel token embedded in it. You only need the token part (the long string starting with `eyJ...`)
-6. Copy that token and save it somewhere safe
+In the Cloudflare dashboard, go to **Zero Trust** in the left sidebar. If it asks you to pick a team name, type anything — it has no effect on billing. Then go to **Networks** → **Tunnels** and click **Create a Tunnel**. Choose **Cloudflared** as the connector type and give the tunnel a name like `tooling-aks`.
 
-After the tunnel is created, you will configure its public hostname routes. Do that after you have deployed the cloudflared pod to your cluster (covered in the deployment steps below).
+On the next screen, select **Docker** as the environment. You will see a `docker run` command with a long token embedded in it. That token is the only thing you need from this screen — it is a long string starting with `eyJ...`. Copy it and store it somewhere safe.
 
-> **📸 Screenshot:** *Cloudflare Zero Trust tunnel creation screen*
+After the tunnel is created you will come back to configure the public hostname routes. That step happens after the cloudflared pod is running in your cluster, which is covered later in the deployment steps.
+
+> **📸 Screenshot:** *Cloudflare Zero Trust tunnel page showing the new tunnel created*
 
 ---
 
 ## GitHub Secrets Setup
 
-Go to your GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Add each of these:
+Go to your GitHub repo, click **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. You need to add all five of these before the pipeline will work.
 
 ### AZURE_CREDENTIALS
 
-This is the JSON output from creating a service principal with Owner role. Run this in your terminal (replace `<your-subscription-id>`):
+This is a JSON block that the pipeline uses to authenticate with Azure. You generate it by creating a service principal. Run the following in your terminal after logging into Azure CLI:
 
 ```bash
 az login
@@ -167,31 +160,31 @@ az ad sp create-for-rbac \
   --sdk-auth
 ```
 
-Copy the entire JSON output that looks like `{ "clientId": "...", "clientSecret": "...", ... }` and paste that as the value of this secret.
+The output will be a JSON object with fields like `clientId`, `clientSecret`, `tenantId`, and `subscriptionId`. Copy the entire thing, curly braces and all, and paste it as the value of this secret.
 
-> **📸 Screenshot:** *GitHub repo secrets page showing all secrets added*
+> **📸 Screenshot:** *GitHub repo settings showing all five secrets added*
 
 ### CLOUDFLARE_API_TOKEN
 
-Paste the Cloudflare API token you created in the Cloudflare setup step above.
+Paste the token you created in Cloudflare in Step 3 above.
 
 ### GRAFANA_PASSWORD
 
-Choose any password you want for the Grafana monitoring dashboard login.
+Any password you choose. This is what you will use to log into the Grafana monitoring dashboard.
 
 ### MYSQL_PASSWORD
 
-The password for the MySQL application user. This project uses `admin` — change it to something stronger for your own deployment.
+The password for the MySQL application user. The project uses `admin` as a placeholder — use something stronger for your own deployment.
 
 ### MYSQL_ROOT_PASSWORD
 
-The MySQL root password. This project uses `admin` — again, change for your own deployment.
+The MySQL root password. Same story — `admin` is the placeholder here, change it for anything beyond a test.
 
 ---
 
 ## Terraform Remote State Setup
 
-Before the pipeline can run Terraform, it needs a place to store the Terraform state file. This is a storage account in Azure. Run these commands once before your first push:
+Terraform needs somewhere to store its state file between pipeline runs. That storage lives in Azure Blob Storage and has to be created manually once before you push anything. Run these commands:
 
 ```bash
 az group create --name tooling-tfstate-rg --location westeurope
@@ -207,31 +200,31 @@ az storage container create \
   --account-name toolingtfstateprod
 ```
 
-> **Important:** The location here is `westeurope`, matching the AKS cluster region. If you change the AKS region in `terraform/main.tf`, update this command to match.
+The location here is `westeurope` to match the AKS cluster region. If you change the region in `terraform/main.tf`, update this to match.
 
 ---
 
 ## How the CI/CD Pipeline Works
 
-The GitHub Actions pipeline has two workflows that trigger on push to `main`. The **Terraform workflow** provisions or updates the infrastructure. The **CI/CD workflow** builds, scans, and deploys the application.
+Two GitHub Actions workflows trigger on every push to `main`. The Terraform workflow provisions or updates the infrastructure. The CI/CD workflow builds the Docker image, scans it, and deploys the app.
 
-When you push, here is the order of what happens in the deployment job:
+The deployment job inside the CI/CD workflow runs in a very specific order and that order matters:
 
-1. Namespaces are created first — `tooling`, `ingress-nginx`, `cert-manager`, `monitoring`, `cloudflare-tunnel`
-2. NGINX Ingress Controller is installed and the external IP is printed in the pipeline logs
-3. The pipeline waits for DNS propagation — it keeps checking every 30 seconds until both `heros.com.ng` and `www.heros.com.ng` resolve to the ingress IP
-4. cert-manager is installed after DNS is confirmed, not before
-5. All three cert-manager pods (`cert-manager`, `cert-manager-webhook`, `cert-manager-cainjector`) must be fully ready before the next step
+1. All namespaces are created first (`tooling`, `ingress-nginx`, `cert-manager`, `monitoring`, `cloudflare-tunnel`)
+2. NGINX Ingress Controller is installed and the external IP gets printed in the pipeline logs
+3. The pipeline waits for DNS propagation, checking every 30 seconds until both `heros.com.ng` and `www.heros.com.ng` resolve to the ingress IP
+4. cert-manager installs only after DNS is confirmed
+5. All three cert-manager pods (`cert-manager`, `cert-manager-webhook`, `cert-manager-cainjector`) have to be fully ready before anything else continues
 6. The Cloudflare API token secret is created in the `cert-manager` namespace
-7. The ClusterIssuer is applied using a polling loop (not `kubectl wait`, which is unreliable for this)
+7. The ClusterIssuer is applied using a polling loop rather than `kubectl wait`, which is unreliable for this resource type
 8. Database secrets are created
 9. The app is deployed via Helm
-10. The database schema is imported (with error suppression for re-deploys where tables already exist)
-11. The Prometheus and Grafana monitoring stack is installed
+10. The database schema is imported, with error handling so re-deploys do not fail when tables already exist
+11. The Prometheus and Grafana monitoring stack is installed last
 
-This order is non-negotiable. Installing cert-manager before ingress-nginx, or cert-manager before DNS propagation, will cause certificate failures that are painful to debug.
+Getting this order wrong is the fastest way to end up with a certificate that will never issue. cert-manager cannot do its job without a working ingress and without DNS already pointing at it.
 
-> **📸 Screenshot:** *GitHub Actions pipeline showing all steps passed*
+> **📸 Screenshot:** *GitHub Actions showing both workflows passed*
 
 ---
 
@@ -247,19 +240,17 @@ git commit -m "initial deployment"
 git push origin main
 ```
 
-Both workflows will trigger automatically.
+Both workflows will kick off automatically.
 
-### Step 2 — Watch the Pipeline and Update DNS
+### Step 2 — Grab the Ingress IP and Update Cloudflare DNS
 
-When the pipeline reaches the **Install ingress-nginx** step, it will print the external IP it was assigned. Copy that IP and update your Cloudflare DNS A records immediately (both `@` and `www`). Keep them on grey cloud (DNS only) at this point.
+Watch the pipeline in the GitHub Actions tab. When it reaches the ingress-nginx install step, it will print the external IP that Azure assigned. Copy that IP, go to your Cloudflare DNS settings, and update both A records (`@` and `www`) to point to it. Leave them on grey cloud for now.
 
-The pipeline will then sit in the DNS propagation wait loop until `nslookup heros.com.ng 8.8.8.8` returns that IP. Once DNS is confirmed, it moves forward automatically.
+The pipeline will hold at the DNS propagation step until `nslookup heros.com.ng 8.8.8.8` returns that IP. Once DNS confirms, the pipeline moves forward on its own.
 
-> **📸 Screenshot:** *Pipeline logs showing external IP being printed*
+> **📸 Screenshot:** *Pipeline logs with the ingress external IP printed*
 
-### Step 3 — Connect to Your Cluster
-
-Once the pipeline completes the AKS deploy step, you can connect to the cluster:
+### Step 3 — Connect kubectl to Your Cluster
 
 ```bash
 az aks get-credentials --resource-group tooling-rg --name tooling-aks
@@ -267,7 +258,9 @@ az aks get-credentials --resource-group tooling-rg --name tooling-aks
 
 ### Step 4 — Deploy the Cloudflare Tunnel
 
-After the pipeline finishes, the cloudflared pod needs your tunnel token. Create the token secret in the cluster:
+The pipeline does not handle the tunnel deployment because the tunnel token is specific to each person's Cloudflare account. You do this once manually after the pipeline finishes.
+
+Store the tunnel token as a Kubernetes secret:
 
 ```bash
 kubectl create namespace cloudflare-tunnel --dry-run=client -o yaml | kubectl apply -f -
@@ -277,7 +270,7 @@ kubectl create secret generic cloudflare-tunnel-token \
   -n cloudflare-tunnel
 ```
 
-Create a file called `cloudflared.yaml` with this content (use Notepad on Windows — Git Bash has heredoc issues):
+Create a file called `cloudflared.yaml` (on Windows, use Notepad rather than Git Bash to avoid heredoc formatting issues):
 
 ```yaml
 apiVersion: apps/v1
@@ -313,50 +306,53 @@ Apply it:
 kubectl apply -f cloudflared.yaml
 ```
 
-### Step 5 — Configure Tunnel Hostname Routes
+### Step 5 — Configure Public Hostname Routes in Cloudflare
 
-Back in Cloudflare → Zero Trust → Networks → Tunnels → your tunnel → **Public Hostnames**:
+Go back to Cloudflare → Zero Trust → Networks → Tunnels → click your tunnel → **Public Hostnames** → **Add a public hostname**.
 
-| Subdomain | Domain | Path | Service |
-|---|---|---|---|
-| (empty) | heros.com.ng | | `http://tooling-web-service.tooling.svc.cluster.local:80` |
-| www | heros.com.ng | | `http://tooling-web-service.tooling.svc.cluster.local:80` |
+Add two routes:
 
-The URL format `tooling-web-service.tooling.svc.cluster.local:80` is Kubernetes internal DNS. The cloudflared pod runs inside the cluster, so it can reach any service this way. The format is always `<service-name>.<namespace>.svc.cluster.local:<port>`.
+The first one has no subdomain, domain set to `heros.com.ng`, and the service set to `http://tooling-web-service.tooling.svc.cluster.local:80`.
 
-### Step 6 — Flip Cloudflare to Orange Cloud
+The second has subdomain `www`, domain `heros.com.ng`, and the same service URL.
 
-In Cloudflare DNS, click the cloud icon next to your A records to switch them from grey (DNS only) to orange (proxied). Also go to **SSL/TLS** and set the mode to **Full**.
+That URL format is Kubernetes internal DNS. Because cloudflared runs as a pod inside the cluster, it can reach any Kubernetes service using this pattern: `<service-name>.<namespace>.svc.cluster.local:<port>`. It never leaves the cluster to do it.
 
-> **📸 Screenshot:** *Cloudflare DNS records showing orange cloud enabled*
+> **📸 Screenshot:** *Cloudflare tunnel public hostname routes configured*
 
-### Step 7 — Verify DNS and Test
+### Step 6 — Switch Cloudflare to Orange Cloud
+
+In Cloudflare DNS, click the grey cloud icon next to both A records to flip them to orange (proxied). Then go to **SSL/TLS** and set the encryption mode to **Full**.
+
+> **📸 Screenshot:** *Cloudflare DNS with orange cloud proxy enabled on both records*
+
+### Step 7 — Confirm Everything is Working
 
 ```bash
 nslookup heros.com.ng 8.8.8.8
 ```
 
-With orange cloud on, this should return Cloudflare proxy IPs like `172.67.x.x` and `104.21.x.x`. That is correct — it means traffic is flowing through Cloudflare.
+With the orange cloud on, this will return Cloudflare's own proxy IPs (something like `172.67.x.x` and `104.21.x.x`) instead of your Azure IP. That is exactly what you want — it means all traffic is flowing through Cloudflare.
 
-Open `https://heros.com.ng` in a browser. You should see the app with a valid HTTPS padlock.
+Open `https://heros.com.ng` in your browser. The app should load with a valid HTTPS padlock in the address bar.
 
-> **📸 Screenshot:** *Browser showing heros.com.ng with HTTPS and the app loaded*
+> **📸 Screenshot:** *Browser showing heros.com.ng fully loaded with HTTPS*
 
-> **📸 Screenshot:** *Successful login to the web app*
+> **📸 Screenshot:** *Successful login to the web application*
 
 ---
 
 ## Verification Commands
 
-Use these to confirm everything is healthy after deployment.
+These are the commands to check that every part of the stack is healthy after deployment.
 
-### Check all pods across all namespaces
+### All pods across all namespaces
 
 ```bash
 kubectl get pods -A
 ```
 
-All pods should show `Running`. The expected pods are:
+Everything should be in `Running` state. Here is what the full pod list looks like on a healthy deployment:
 
 | Namespace | Pod |
 |---|---|
@@ -369,21 +365,21 @@ All pods should show `Running`. The expected pods are:
 | monitoring | monitoring-grafana-* |
 | monitoring | monitoring-kube-prometheus-operator-* |
 | monitoring | monitoring-kube-state-metrics-* |
-| monitoring | monitoring-prometheus-node-exporter-* (×2) |
+| monitoring | monitoring-prometheus-node-exporter-* (×2 nodes) |
 | monitoring | prometheus-* |
 | tooling | tooling-db-0 |
 | tooling | tooling-web-web-* (×2 replicas) |
 
-> **📸 Screenshot:** *`kubectl get pods -A` output with all pods Running*
+> **📸 Screenshot:** *kubectl get pods -A with all pods in Running state*
 
-### Check TLS certificate
+### TLS certificate status
 
 ```bash
 kubectl get certificate -n tooling
 kubectl describe certificate tooling-web-tls -n tooling
 ```
 
-The `READY` column should show `True`. A successful certificate looks like:
+The READY column should say `True`. It will look like this when it is healthy:
 
 ```
 NAME              READY   SECRET            AGE
@@ -392,25 +388,25 @@ tooling-web-tls   True    tooling-web-tls   10m
 
 > **📸 Screenshot:** *kubectl get certificate output showing READY: True*
 
-### Check cert-manager is healthy
+### cert-manager health
 
 ```bash
 kubectl get pods -n cert-manager
 kubectl logs -n cert-manager deploy/cert-manager --tail=30
 ```
 
-### Check the Cloudflare Tunnel is connected
+### Cloudflare Tunnel connection status
 
 ```bash
 kubectl get pods -n cloudflare-tunnel
 kubectl logs -n cloudflare-tunnel deployment/cloudflared --tail=20
 ```
 
-In the logs you should see a line containing `Registered tunnel connection`. That confirms cloudflared has made a live outbound connection to Cloudflare's network.
+Look for a line that says `Registered tunnel connection` in the logs. That tells you the pod has successfully made its outbound connection to Cloudflare's network and is ready to serve traffic.
 
-> **📸 Screenshot:** *cloudflared pod logs showing "Registered tunnel connection"*
+> **📸 Screenshot:** *cloudflared logs showing Registered tunnel connection*
 
-### Check ingress and services
+### Ingress and services
 
 ```bash
 kubectl get ingress -n tooling
@@ -418,9 +414,9 @@ kubectl get svc -n ingress-nginx
 kubectl get svc -n tooling
 ```
 
-### Force cert-manager to retry if something is stuck
+### Force cert-manager to retry a stuck certificate
 
-If the certificate is stuck at `READY: False`, delete everything and let cert-manager start fresh:
+If the certificate is sitting at `READY: False` and not moving, delete the related resources and cert-manager will recreate them automatically:
 
 ```bash
 kubectl delete certificate tooling-web-tls -n tooling
@@ -428,16 +424,16 @@ kubectl delete order --all -n tooling
 kubectl delete challenge --all -n tooling
 ```
 
-cert-manager recreates the certificate automatically because of the annotation on the Ingress resource. Watch it recover:
+Watch the recovery:
 
 ```bash
 kubectl get certificate -n tooling -w
 kubectl get challenge -n tooling
 ```
 
-### Test the app internally from inside the cluster
+### Test the app from inside the cluster
 
-This command spins up a temporary curl pod inside the cluster, runs a request to the app service, and then deletes itself:
+This spins up a temporary pod, fires a curl request at the app service, prints the result, and cleans itself up:
 
 ```bash
 kubectl run curl-test \
@@ -447,84 +443,102 @@ kubectl run curl-test \
   curl -v http://tooling-web-service:80 --max-time 10
 ```
 
-If this returns HTML or an HTTP redirect, the app is alive. If external access is broken but this works, the problem is outside the cluster (DNS, ISP, Cloudflare config).
+If this returns HTML or a redirect, the app is alive and the problem is somewhere on the external path — DNS, ISP, or Cloudflare config. If this also fails, the issue is inside the cluster.
 
-### Check Grafana monitoring
-
-Grafana runs on its own LoadBalancer service in the `monitoring` namespace:
+### Grafana monitoring dashboard
 
 ```bash
 kubectl get svc -n monitoring | grep grafana
 ```
 
-Take the external IP from that output and open it in your browser on port 80. Log in with username `admin` and the `GRAFANA_PASSWORD` you set in GitHub secrets. The Kubernetes dashboards will show live CPU, memory, disk, and network metrics for all your tooling pods.
+Take the external IP from that output and open it in your browser on port 80. Log in with username `admin` and the `GRAFANA_PASSWORD` from your GitHub secrets. You will see live metrics for all tooling pods — CPU, memory, disk, and network.
 
-> **📸 Screenshot:** *Grafana dashboard showing Kubernetes metrics*
+> **📸 Screenshot:** *Grafana Kubernetes dashboard showing live pod metrics*
 
 ---
 
 ## The Troubleshooting Journey
 
-This deployment did not go smoothly on the first try and that is entirely the point. Here is a summary of the major issues encountered across the session dates and what resolved them. The full logs are in the `/docs` folder.
+This did not deploy cleanly the first time and that is the honest truth. Here is what went wrong across the sessions and what actually fixed each thing. The full session logs are in the `/docs` folder.
 
-**Wrong pipeline order (cert-manager before ingress-nginx)**  
-cert-manager was installed before NGINX Ingress Controller in the first version of the pipeline. This meant ACME challenges had nowhere to go. Fix: ingress-nginx must install first, get its external IP, wait for DNS propagation, and only then install cert-manager.
+**cert-manager installed before ingress-nginx**
 
-**NSG rules created with empty port ranges**  
-The Azure CLI flag `--destination-port-ranges` (plural) silently creates NSG rules with no ports defined in some pipeline environments, allowing no traffic at all despite the rules appearing in the list. Fix: added `load_balancer_sku = "standard"` to the Terraform AKS network profile, which lets the AKS Standard Load Balancer manage NSG rules automatically.
+The first version of the pipeline had cert-manager installing before the NGINX Ingress Controller existed. ACME challenges need a working ingress with an external IP to route challenge traffic. Without it, every certificate attempt failed immediately. The fix was restructuring the pipeline so ingress-nginx goes first, gets its IP, waits for DNS, and only then hands off to cert-manager.
 
-**HTTP-01 challenge failing permanently**  
-Let's Encrypt uses port 80 for HTTP-01 challenges. Azure East US IP ranges were unreachable from Let's Encrypt's validation servers in this environment. Fix: migrated DNS to Cloudflare and switched to DNS-01 challenge type. The ClusterIssuer now uses Cloudflare's API to create TXT records instead of requiring port 80.
+**NSG rules with empty port ranges**
 
-**Azure East US IP blocked by Nigerian ISPs**  
-Even after the TLS certificate issued successfully, the app was inaccessible from local browsers and mobile data. The Azure East US IP range `20.231.250.154` was blocked at the ISP level. Internal cluster curl worked fine — the problem was entirely on the client network path.
+The Azure CLI flag `--destination-port-ranges` (plural) was silently creating NSG rules with no ports defined in the pipeline environment. The rules showed up in the list looking correct, but they allowed no traffic whatsoever. The fix was adding `load_balancer_sku = "standard"` to the Terraform AKS network profile so the Standard Load Balancer handles NSG rules automatically and correctly.
 
-**Region migration from East US to West Europe**  
-Changed `location = "East US"` to `location = "West Europe"` in `terraform/main.tf`, destroyed the old infrastructure, and ran a full redeploy. The new West Europe IP `4.175.121.155` was still blocked from Nigerian ISPs, which led to the tunnel solution.
+**HTTP-01 challenge timing out permanently**
 
-**Cloudflare Tunnel as the final fix**  
-Instead of trying to make the Azure IP reachable, a Cloudflare Tunnel was deployed inside the cluster. The cloudflared pod makes an outbound connection from inside AKS to Cloudflare's edge network. Traffic flows: user → Cloudflare → tunnel → cluster → app. The Azure IP never needs to accept any inbound connections from outside. With this in place, `https://heros.com.ng` became fully accessible with HTTPS confirmed in the browser.
+Let's Encrypt uses port 80 for HTTP-01 challenges. Azure East US IP ranges were being blocked or filtered before requests could reach the cluster, so every challenge attempt timed out. Switching to DNS-01 via Cloudflare's API solved this entirely — the challenge no longer needs port 80. cert-manager creates a TXT record in Cloudflare DNS, Let's Encrypt reads it, and the certificate issues.
 
-> **📸 Screenshot:** *Proof of successful login — app running on heros.com.ng*
+**Azure East US IP blocked at the ISP level**
+
+After the TLS certificate successfully issued, the app still would not load in a browser or on mobile data. The ingress IP `20.231.250.154` was being blocked by Nigerian ISPs. Internal cluster curl worked fine, confirming everything inside Azure was healthy. The block was purely on the path between local machines and the Azure IP.
+
+**Region migration from East US to West Europe**
+
+Changed the Terraform location from East US to West Europe, destroyed and rebuilt the entire infrastructure. The new West Europe IP `4.175.121.155` was also blocked by the same ISPs. At this point it was clear the Azure IP itself was never going to be the answer.
+
+**Cloudflare Tunnel**
+
+Rather than keep trying to make the Azure IP reachable, a Cloudflare Tunnel was deployed inside the cluster. The cloudflared pod makes an outbound connection from inside AKS to Cloudflare's edge. Users hit Cloudflare, Cloudflare routes through the tunnel, and the request lands inside the cluster without any inbound connection ever touching the Azure IP. After this, `https://heros.com.ng` loaded in the browser with a valid certificate and the login worked.
+
+> **📸 Screenshot:** *Successful login proof — app fully accessible at heros.com.ng*
 
 ---
 
 ## Repository Structure
 
 ```
-tooling-project/
+tooling/
 ├── .github/
 │   └── workflows/
-│       ├── terraform.yml       # Infrastructure provisioning workflow
-│       └── ci-cd.yml           # Build, scan, and deploy workflow
+│       ├── deploy.yml          # CI/CD workflow — build, scan, and deploy
+│       └── terraform.yaml      # Infrastructure provisioning workflow
 ├── helm/
 │   └── tooling-web/            # Helm chart for the application
+│       ├── templates/
+│       │   ├── db-and-svc.yaml     # MySQL StatefulSet and Service
+│       │   ├── deployment.yaml     # App Deployment manifest
+│       │   ├── hpa.yaml            # Horizontal Pod Autoscaler
+│       │   └── ingress.yaml        # Ingress with TLS annotation
 │       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
+│       └── values.yaml
+├── html/                       # Application source files
+├── k8s/                        # Standalone Kubernetes manifests
 ├── terraform/
-│   ├── main.tf                 # AKS, ACR, networking resources
-│   ├── variables.tf
-│   ├── outputs.tf              # Outputs consumed by GitHub Actions
-│   └── backend.tf              # Remote state in Azure Blob Storage
-├── tooling-db.sql              # Database schema
-├── Dockerfile
-└── README.md
+│   ├── backend.tf              # Remote state in Azure Blob Storage
+│   ├── main.tf                 # AKS, ACR, and networking resources
+│   └── outputs.tf              # Outputs consumed by GitHub Actions
+├── .gitignore
+├── apache-config.conf          # Apache virtual host configuration
+├── cloudflared.yaml            # Cloudflare Tunnel deployment manifest
+├── docker-compose.yml          # Local development compose file
+├── Dockerfile                  # Container image definition
+├── ingress-nginx-svc-backup.yaml  # Backup ingress service manifest
+├── Jenkinsfile                 # Jenkins pipeline (reference only)
+├── LICENSE
+├── README.md
+├── start-apache                # Apache startup script
+└── tooling-db.sql              # Database schema
 ```
 
 ---
 
-## Key Lessons for Anyone Repeating This
+## Key Takeaways for Anyone Repeating This
 
-The certificate challenge type matters more than you think. HTTP-01 is the default and it requires port 80 to be reachable from Let's Encrypt's servers. In environments where Azure IPs are filtered — which is common across African ISPs — HTTP-01 will silently time out every time. Switch to DNS-01 from the start if you are deploying from Nigeria or a similar environment and using Cloudflare for your domain.
+Start with DNS-01 instead of HTTP-01 if you are deploying from Nigeria or anywhere Azure IP ranges tend to get filtered. HTTP-01 looks simple but it has a hard dependency on port 80 being reachable from Let's Encrypt's servers, and that is a fight you will not win in this network environment. DNS-01 via Cloudflare sidesteps the whole problem.
 
-The order inside the pipeline is not flexible. cert-manager has hard dependencies on ingress-nginx and on DNS being live before it can do anything useful. Getting the sequencing wrong means certificates fail in ways that are confusing because the errors look like config problems.
+The pipeline order is not negotiable. cert-manager depends on ingress-nginx and on DNS being live before it can issue anything. Skipping or reordering those steps produces errors that look like config problems but are actually sequencing problems.
 
-Cloudflare Tunnel is not a workaround, it is the correct architecture for this kind of deployment. It eliminates the need for your cloud provider IP to be directly reachable, which is a real security advantage regardless of ISP filtering.
+Cloudflare Tunnel is genuinely the right architecture here, not a last resort. Having your cloud IP hidden behind a tunnel is a security improvement regardless of ISP filtering. Nobody can port-scan or directly attack an IP that has nothing listening on it.
 
-Run `kubectl run curl-test` before you start blaming your Azure config. If the internal curl works, your cluster is fine and the problem is on the network path between your machine and the Azure IP. That narrows the debugging space significantly.
+Before spending time debugging Azure config, run the internal curl test. If the cluster can reach the app but external access is broken, the issue is outside Azure and you should be looking at DNS, ISP routing, or Cloudflare settings instead.
 
 ---
 
 *Built and documented by Christopher Ojedayo*  
-*Repository: [https://github.com/kristarking/tooling-project](https://github.com/kristarking/tooling-project)*
+*Repository: [https://github.com/kristarking/tooling-project](https://github.com/kristarking/tooling-project)*  
+*Connect: [linkedin.com/in/christopherojedayo](https://www.linkedin.com/in/christopherojedayo/)*
