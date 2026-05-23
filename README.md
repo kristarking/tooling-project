@@ -1,4 +1,4 @@
-<img width="1086" height="211" alt="t13 merge aks to your terminal" src="https://github.com/user-attachments/assets/489b8048-3e42-4276-a5fa-e9abc212e613" /># Tooling Web App — Production Deployment on Azure Kubernetes Service
+**Tooling Web App  Production Deployment on Azure Kubernetes Service**
 
 **Author:** Christopher Ojedayo  
 **Domain:** [https://heros.com.ng](https://heros.com.ng)  
